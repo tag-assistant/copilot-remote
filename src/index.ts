@@ -1981,6 +1981,8 @@ async function main(): Promise<void> {
       const c = cfg(chatId);
       c.autopilot = !c.autopilot;
       c.mode = c.autopilot ? 'autopilot' : 'interactive';
+      // Always save autopilot globally (not just as thread override)
+      configStore.set(chatId, { autopilot: c.autopilot, mode: c.mode }, true);
       setCfg(chatId, c);
       // Kill old session — next message will create a fresh one with new config
       const old = sessions.get(chatId);
