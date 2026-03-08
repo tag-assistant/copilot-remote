@@ -152,24 +152,18 @@ async function main(): Promise<void> {
     };
 
     const onToolStart = async (tool: any) => {
-      // Flush current stream first
-      if (editTimer) { clearTimeout(editTimer); await flushEdit(); }
-
       const name = tool.toolName;
       const args = tool.arguments;
       let detail = '';
       if (name === 'bash' && args?.command) {
-        detail = '\n`' + args.command + '`';
+        detail = ' `' + args.command + '`';
       } else if ((name === 'edit_file' || name === 'read_file') && args?.file_path) {
-        detail = '\n`' + args.file_path + '`';
+        detail = ' `' + args.file_path + '`';
       } else if (args?.description) {
-        detail = '\n' + args.description;
+        detail = ' ' + args.description;
       }
-      await telegram.sendMessage(chatId, '🔧 *' + name + '*' + detail);
-
-      // Next content goes to a new message
-      streamMsgId = null;
-      streamText = '';
+      streamText += '\n🔧 *' + name + '*' + detail + '\n';
+      scheduleEdit();
     };
 
     session.on('thinking', onThinking);
