@@ -375,15 +375,17 @@ export class Session extends EventEmitter {
     this._busy = true;
     const { prompt, attachments, resolve, reject } = this.queue.shift()!;
 
+    let onDelta: ((t: string) => void) | null = null;
+    let errorHandler: ((msg: string) => void) | null = null;
+
     try {
       let text = '';
-      const onDelta = (t: string) => {
+      onDelta = (t: string) => {
         text += t;
       };
       this.on('delta', onDelta);
 
       // Reject if session emits an error (e.g. auth failure)
-      let errorHandler: ((msg: string) => void) | null = null;
       const errorPromise = new Promise<never>((_, rej) => {
         errorHandler = (msg: string) => rej(new Error(msg));
         this.once('error', errorHandler);
@@ -394,13 +396,11 @@ export class Session extends EventEmitter {
       if (attachments?.length) sendOpts.attachments = attachments;
 
       const result = await Promise.race([this.session!.sendAndWait(sendOpts, 300_000), errorPromise]);
-      if (errorHandler) this.off('error', errorHandler);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
       const resultObj = result as Record<string, unknown>;
       const resultData = (resultObj?.data as Record<string, unknown>) ?? {};
 
-      this.off('delta', onDelta);
       resolve({
         content:
           text.trim() ||
@@ -412,6 +412,8 @@ export class Session extends EventEmitter {
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
     } finally {
+      if (onDelta) this.off('delta', onDelta);
+      if (errorHandler) this.off('error', errorHandler);
       this._busy = false;
       this.processing = false;
       if (this.queue.length) this.processQueue();
