@@ -752,6 +752,8 @@ async function main(): Promise<void> {
     for (const [kind, label] of Object.entries(kindLabels)) {
       buttons.push([{ text: t(c.autoApprove[kind as PermKind]) + ' ' + label, data: 'sec:' + kind }]);
     }
+    const allOn = Object.values(c.autoApprove).every(Boolean);
+    buttons.push([{ text: allOn ? '🔓 Revoke All' : '✅ Approve All', data: 'sec:toggle-all' }]);
     buttons.push([{ text: '← Back', data: 'cfg:back' }]);
     await client.editButtons(chatId, editId, '🔒 *Tool Security*\nAuto-approve by type:', buttons);
   }
@@ -845,9 +847,14 @@ async function main(): Promise<void> {
       return sendDisplayMenu(chatId, msgId);
     }
     if (data.startsWith('sec:')) {
-      const kind = data.slice(4) as PermKind;
       const c = cfg(chatId);
-      c.autoApprove[kind] = !c.autoApprove[kind];
+      if (data === 'sec:toggle-all') {
+        const allOn = Object.values(c.autoApprove).every(Boolean);
+        for (const k of Object.keys(c.autoApprove)) c.autoApprove[k as PermKind] = !allOn;
+      } else {
+        const kind = data.slice(4) as PermKind;
+        c.autoApprove[kind] = !c.autoApprove[kind];
+      }
       setCfg(chatId, c);
       return sendSecurityMenu(chatId, msgId);
     }
