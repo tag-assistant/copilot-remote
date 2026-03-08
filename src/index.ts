@@ -1164,28 +1164,11 @@ async function main(): Promise<void> {
       c.mode = newMode;
       c.autopilot = newMode === 'autopilot';
       setCfg(chatId, c);
-      // Disconnect + resume with correct permission handler (preserves context)
+      // Kill old session — next message will create a fresh one with new config
       const old = sessions.get(chatId);
-      const savedId = old?.sessionId ?? sessionStore.get(chatId)?.sessionId;
       if (old?.alive) await old.disconnect();
       sessions.delete(chatId);
-      if (savedId) {
-        // Resume same session with new config
-        const s = new Session();
-        try {
-          await s.resume(savedId, { cwd: workDir(chatId), binary: bin, model: c.model, autopilot: c.autopilot });
-          sessions.set(chatId, s);
-          if (newMode === 'plan')
-            await s.setMode('plan').catch(() => {
-              /* ignore */
-            });
-        } catch {
-          sessionStore.delete(chatId);
-          await getSession(chatId);
-        }
-      } else {
-        await getSession(chatId);
-      }
+      sessionStore.delete(chatId);
       return sendConfigMenu(chatId, msgId);
     }
     if (data.startsWith('cfg:')) {

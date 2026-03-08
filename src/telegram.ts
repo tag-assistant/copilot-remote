@@ -94,16 +94,6 @@ export class TelegramBridge {
 
           if (update.message?.text) {
             const msg = update.message;
-            log.info(
-              '[update] chat:',
-              msg.chat.id,
-              'thread:',
-              msg.message_thread_id,
-              'type:',
-              msg.chat.type,
-              'text:',
-              msg.text?.slice(0, 30),
-            );
             const userId = String(msg.from?.id);
 
             if (!this.pairedUser) {
