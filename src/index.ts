@@ -444,7 +444,20 @@ async function main(): Promise<void> {
       messageMode: c.messageMode || undefined,
       // Global config passthrough
       provider: globalCfg.provider,
-      mcpServers: globalCfg.mcpServers,
+      mcpServers: (() => {
+        // Merge: ~/.copilot/mcp-config.json + config.json mcpServers
+        const merged = { ...(globalCfg.mcpServers ?? {}) };
+        try {
+          const mcpPath = path.join(process.env.HOME ?? '', '.copilot', 'mcp-config.json');
+          if (fs.existsSync(mcpPath)) {
+            const mcpFile = JSON.parse(fs.readFileSync(mcpPath, 'utf-8'));
+            const servers = mcpFile.mcpServers ?? mcpFile.servers ?? mcpFile;
+            Object.assign(merged, servers);
+            log.info('Loaded MCP servers from ~/.copilot/mcp-config.json');
+          }
+        } catch (e) { log.debug('Failed to load ~/.copilot/mcp-config.json:', e); }
+        return Object.keys(merged).length ? merged : undefined;
+      })(),
       // Merge discovered agents from standard locations with config agents
       customAgents: (() => {
         const discovered = discoverAgents(workDir(chatId));
@@ -454,7 +467,23 @@ async function main(): Promise<void> {
         if (discovered.length) log.info(`Discovered ${discovered.length} agent(s): ${discovered.map(a => a.name).join(', ')}`);
         return merged.length ? merged : undefined;
       })(),
-      skillDirectories: globalCfg.skillDirectories,
+      skillDirectories: (() => {
+        // Merge config + auto-discovered skill directories
+        const dirs = [...(globalCfg.skillDirectories ?? [])];
+        // Check common locations
+        const home = process.env.HOME ?? '';
+        const candidates = [
+          path.join(home, '.copilot', 'skills'),
+          path.join(home, '.github', 'skills'),
+        ];
+        for (const d of candidates) {
+          if (fs.existsSync(d) && !dirs.includes(d)) {
+            dirs.push(d);
+            log.info('Auto-discovered skill directory:', d);
+          }
+        }
+        return dirs.length ? dirs : undefined;
+      })(),
       disabledSkills: globalCfg.disabledSkills,
       systemInstructions: globalCfg.systemInstructions,
       availableTools: globalCfg.availableTools,
