@@ -567,8 +567,21 @@ async function main(): Promise<void> {
       session.off('user_input_request', onUserInput);
     };
 
+    let res: { content: string };
     try {
-      const res = await session.send(prompt);
+      res = await session.send(prompt);
+    } catch (sendErr) {
+      cleanup();
+      clearInterval(typingInterval);
+      // Kill the broken session so it doesn't linger
+      try { session.kill(); } catch { /* ignore */ }
+      sessions.delete(chatId);
+      sessionStore.delete(chatId);
+      await react('😱');
+      await client.sendMessage(chatId, '❌ Session error: ' + String(sendErr) + '\n\nUse /new to start a fresh session.');
+      return;
+    }
+    try {
       cleanup();
       clearInterval(typingInterval);
 
@@ -1326,8 +1339,32 @@ async function main(): Promise<void> {
   // ── Inline query handler — one-shot answers from any chat ──
   client.onInlineQuery = async (queryId, query) => {
     if (!client.answerInlineQuery) return;
-    // For inline mode, we just return a "Send to Copilot" option
-    // that switches to the bot's DM with the query pre-filled
+    // Try to get a one-shot answer from Copilot within Telegram's inline timeout
+    try {
+      const s = new Session();
+      await s.start({ cwd: config.workDir, binary: bin, githubToken: config.githubToken });
+      const res = await Promise.race([
+        s.send(query),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000)),
+      ]);
+      s.kill();
+      if (res?.content) {
+        const answer = res.content.slice(0, 4000);
+        const title = answer.slice(0, 60).replace(/\n/g, ' ');
+        await client.answerInlineQuery(queryId, [
+          {
+            type: 'article',
+            id: '1',
+            title: '✅ ' + title,
+            description: answer.slice(0, 200),
+            input_message_content: { message_text: answer },
+          },
+        ]);
+        return;
+      }
+    } catch {
+      // Timeout or error — fall back to echo
+    }
     await client.answerInlineQuery(queryId, [
       {
         type: 'article',

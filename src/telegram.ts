@@ -118,6 +118,34 @@ export class TelegramClient implements Client {
       }
     });
 
+    // Stickers → forward emoji/description as text
+    this.bot.on('message:sticker', async (ctx) => {
+      const sticker = ctx.message.sticker;
+      const emoji = sticker.emoji ?? '';
+      const desc = emoji ? `[Sticker: ${emoji}]` : '[Sticker]';
+      const threadId = ctx.message.message_thread_id;
+      this.onMessage?.(desc, String(ctx.chatId), ctx.message.message_id, undefined, undefined, threadId);
+    });
+
+    // Video and video notes → download and forward as file
+    this.bot.on(['message:video', 'message:video_note'], async (ctx) => {
+      const msg = ctx.message;
+      const video = msg.video ?? msg.video_note;
+      if (!video) return;
+      const fileId = video.file_id;
+      const fileName = (msg.video as { file_name?: string })?.file_name ?? 'video.mp4';
+      const caption = (msg as { caption?: string }).caption ?? '';
+      this.onFile?.(fileId, fileName, caption, String(ctx.chatId), msg.message_id, msg.message_thread_id);
+    });
+
+    // Location → forward as text
+    this.bot.on('message:location', async (ctx) => {
+      const loc = ctx.message.location;
+      const text = `User shared location: ${loc.latitude}, ${loc.longitude}`;
+      const threadId = ctx.message.message_thread_id;
+      this.onMessage?.(text, String(ctx.chatId), ctx.message.message_id, undefined, undefined, threadId);
+    });
+
     // Callback queries
     this.bot.on('callback_query:data', async (ctx) => {
       const chatId = String(ctx.chatId ?? '');
