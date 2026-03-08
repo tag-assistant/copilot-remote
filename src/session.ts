@@ -37,11 +37,21 @@ export class Session extends EventEmitter {
   private queue: { prompt: string; resolve: (msg: CopilotMessage) => void; reject: (err: Error) => void }[] = [];
   private processing = false;
 
-  get alive() { return this._alive; }
-  get busy() { return this._busy; }
-  get sessionId() { return this.session?.sessionId ?? null; }
-  get autopilot() { return this._autopilot; }
-  set autopilot(v: boolean) { this._autopilot = v; }
+  get alive() {
+    return this._alive;
+  }
+  get busy() {
+    return this._busy;
+  }
+  get sessionId() {
+    return this.session?.sessionId ?? null;
+  }
+  get autopilot() {
+    return this._autopilot;
+  }
+  set autopilot(v: boolean) {
+    this._autopilot = v;
+  }
 
   async start(opts: SessionOptions): Promise<void> {
     this.cwd = opts.cwd;
@@ -54,11 +64,10 @@ export class Session extends EventEmitter {
     await this.client.start();
 
     const config: SessionConfig = {
-      clientName: 'copilot-remote', streaming: true,
+      clientName: 'copilot-remote',
+      streaming: true,
       workingDirectory: this.cwd,
-      onPermissionRequest: this._autopilot
-        ? approveAll
-        : (req: PermissionRequest) => this.handlePermission(req),
+      onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
     };
     if (opts.model) config.model = opts.model;
 
@@ -70,16 +79,39 @@ export class Session extends EventEmitter {
   private handleEvent(e: SessionEvent): void {
     const d = e.data as any;
     switch (e.type) {
-      case 'assistant.message_delta': this.emit('delta', d.content ?? d.text ?? ''); break;
-      case 'assistant.reasoning_delta': this.emit('thinking', d.content ?? d.text ?? ''); break;
-      case 'assistant.message': this.emit('message', d.content ?? ''); break;
-      case 'assistant.usage': this.emit('usage', d); break;
-      case 'tool.execution_start': this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments }); break;
-      case 'tool.execution_complete': this.emit('tool_complete', { toolName: d.name ?? d.toolName, success: d.exitCode === 0 || d.success !== false }); break;
-      case 'permission.requested': this.emit('permission_request', d); break;
-      case 'session.idle': this.emit('idle'); break;
-      case 'session.error': this.emit('error', d.message ?? 'Unknown error'); break;
-      default: log.sdk(e.type, d); break;
+      case 'assistant.message_delta':
+        this.emit('delta', d.content ?? d.text ?? '');
+        break;
+      case 'assistant.reasoning_delta':
+        this.emit('thinking', d.content ?? d.text ?? '');
+        break;
+      case 'assistant.message':
+        this.emit('message', d.content ?? '');
+        break;
+      case 'assistant.usage':
+        this.emit('usage', d);
+        break;
+      case 'tool.execution_start':
+        this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments });
+        break;
+      case 'tool.execution_complete':
+        this.emit('tool_complete', {
+          toolName: d.name ?? d.toolName,
+          success: d.exitCode === 0 || d.success !== false,
+        });
+        break;
+      case 'permission.requested':
+        this.emit('permission_request', d);
+        break;
+      case 'session.idle':
+        this.emit('idle');
+        break;
+      case 'session.error':
+        this.emit('error', d.message ?? 'Unknown error');
+        break;
+      default:
+        log.sdk(e.type, d);
+        break;
     }
   }
 
@@ -118,14 +150,23 @@ export class Session extends EventEmitter {
 
     try {
       let text = '';
-      const onDelta = (t: string) => { text += t; };
+      const onDelta = (t: string) => {
+        text += t;
+      };
       this.on('delta', onDelta);
 
       const result = await this.session!.sendAndWait({ prompt }, 300_000);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
       this.off('delta', onDelta);
-      resolve({ content: text.trim() || (result as any)?.data?.content || (result as any)?.content || String(result ?? '').slice(0, 500) || '_(no response)_' });
+      resolve({
+        content:
+          text.trim() ||
+          (result as any)?.data?.content ||
+          (result as any)?.content ||
+          String(result ?? '').slice(0, 500) ||
+          '_(no response)_',
+      });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
     } finally {
@@ -135,39 +176,80 @@ export class Session extends EventEmitter {
     }
   }
 
-  approve() { this.emit('permission_response', true); }
-  deny() { this.emit('permission_response', false); }
-  async abort() { this.session?.abort(); }
+  approve() {
+    this.emit('permission_response', true);
+  }
+  deny() {
+    this.emit('permission_response', false);
+  }
+  async abort() {
+    this.session?.abort();
+  }
 
   // ── SDK RPCs ──
 
-  async setModel(model: string) { this.session?.setModel(model); }
-  async listModels(): Promise<ModelInfo[]> { return this.client?.listModels() ?? []; }
-  async setMode(mode: string) { await this.session!.rpc.mode.set({ mode: mode as any }); }
-  async getMode(): Promise<string> { return (await this.session!.rpc.mode.get()).mode; }
-  async compact(): Promise<any> { return this.session!.rpc.compaction.compact(); }
-  async startFleet(prompt?: string): Promise<any> { return this.session!.rpc.fleet.start({ prompt }); }
-  async listAgents(): Promise<any> { return this.session!.rpc.agent.list(); }
-  async selectAgent(name: string): Promise<any> { return this.session!.rpc.agent.select({ name }); }
-  async deselectAgent(): Promise<any> { return this.session!.rpc.agent.deselect(); }
-  async getCurrentModel(): Promise<any> { return this.session!.rpc.model.getCurrent(); }
-  async getCurrentAgent(): Promise<any> { return this.session!.rpc.agent.getCurrent(); }
-  async readPlan(): Promise<any> { return this.session!.rpc.plan.read(); }
-  async deletePlan(): Promise<any> { return this.session!.rpc.plan.delete(); }
-  async listTools(): Promise<any> { return (this.client as any).rpc.tools.list({ sessionId: this.session!.sessionId }); }
-  async getQuota(): Promise<any> { return (this.client as any).rpc.account.getQuota(); }
-  async getMessages(): Promise<any[]> { return this.session?.getMessages() ?? []; }
-  async listFiles(): Promise<string[]> { return (await this.session!.rpc.workspace.listFiles() as any)?.files ?? []; }
-  async readFile(path: string): Promise<string> { return (await this.session!.rpc.workspace.readFile({ path }) as any)?.content ?? ''; }
+  async setModel(model: string) {
+    this.session?.setModel(model);
+  }
+  async listModels(): Promise<ModelInfo[]> {
+    return this.client?.listModels() ?? [];
+  }
+  async setMode(mode: string) {
+    await this.session!.rpc.mode.set({ mode: mode as any });
+  }
+  async getMode(): Promise<string> {
+    return (await this.session!.rpc.mode.get()).mode;
+  }
+  async compact(): Promise<any> {
+    return this.session!.rpc.compaction.compact();
+  }
+  async startFleet(prompt?: string): Promise<any> {
+    return this.session!.rpc.fleet.start({ prompt });
+  }
+  async listAgents(): Promise<any> {
+    return this.session!.rpc.agent.list();
+  }
+  async selectAgent(name: string): Promise<any> {
+    return this.session!.rpc.agent.select({ name });
+  }
+  async deselectAgent(): Promise<any> {
+    return this.session!.rpc.agent.deselect();
+  }
+  async getCurrentModel(): Promise<any> {
+    return this.session!.rpc.model.getCurrent();
+  }
+  async getCurrentAgent(): Promise<any> {
+    return this.session!.rpc.agent.getCurrent();
+  }
+  async readPlan(): Promise<any> {
+    return this.session!.rpc.plan.read();
+  }
+  async deletePlan(): Promise<any> {
+    return this.session!.rpc.plan.delete();
+  }
+  async listTools(): Promise<any> {
+    return (this.client as any).rpc.tools.list({ sessionId: this.session!.sessionId });
+  }
+  async getQuota(): Promise<any> {
+    return (this.client as any).rpc.account.getQuota();
+  }
+  async getMessages(): Promise<any[]> {
+    return this.session?.getMessages() ?? [];
+  }
+  async listFiles(): Promise<string[]> {
+    return ((await this.session!.rpc.workspace.listFiles()) as any)?.files ?? [];
+  }
+  async readFile(path: string): Promise<string> {
+    return ((await this.session!.rpc.workspace.readFile({ path })) as any)?.content ?? '';
+  }
 
   async newSession(): Promise<void> {
     if (this.session) await this.session.disconnect();
     const config: SessionConfig = {
-      clientName: 'copilot-remote', streaming: true,
+      clientName: 'copilot-remote',
+      streaming: true,
       workingDirectory: this.cwd,
-      onPermissionRequest: this._autopilot
-        ? approveAll
-        : (req: PermissionRequest) => this.handlePermission(req),
+      onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
     };
     this.session = await this.client!.createSession(config);
     this.session.on((e: SessionEvent) => this.handleEvent(e));
@@ -177,8 +259,16 @@ export class Session extends EventEmitter {
     this._alive = false;
     this._busy = false;
     this.queue = [];
-    try { await this.session?.disconnect(); } catch {}
-    try { await this.client?.stop(); } catch {}
+    try {
+      await this.session?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await this.client?.stop();
+    } catch {
+      /* ignore */
+    }
     this.session = null;
     this.client = null;
   }

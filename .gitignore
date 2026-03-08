@@ -1,4 +1,6 @@
 node_modules/
 dist/
-*.env
-.copilot-remote/
+*.tsbuildinfo
+.copilot-remote.json
+.env
+.DS_Store

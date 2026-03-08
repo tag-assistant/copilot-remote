@@ -1,117 +1,102 @@
 # copilot-remote
 
-Control [GitHub Copilot CLI](https://github.com/github/copilot-cli) from Telegram. Send prompts from your phone, get streamed responses with thinking, tool calls, and model selection.
+Control GitHub Copilot from your phone. Telegram today, Discord/iMessage/WhatsApp tomorrow.
+
+[![CI](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml)
+
+## What
+
+A bridge between the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) and messaging platforms. Send prompts from Telegram, get streamed responses with tool calls, inline permission approval, model switching, and full Copilot CLI command parity.
 
 ## Quick Start
 
 ```bash
-# One-liner install (clones, builds, sets up as service)
-curl -fsSL https://raw.githubusercontent.com/tag-assistant/copilot-remote/main/install.sh | bash
-
-# Or run directly with npx
-npx copilot-remote --token <telegram-bot-token> --github-token <github-pat>
-```
-
-## Prerequisites
-
-- **Node.js 20+**
-- **GitHub Copilot CLI** installed (`npm install -g @github/copilot`)
-- **GitHub token** with Copilot access
-- **Telegram bot token** from [@BotFather](https://t.me/BotFather)
-
-## Install
-
-```bash
-# Run directly (no install)
-npx copilot-remote --token $BOT_TOKEN --github-token $GITHUB_TOKEN
-
-# Or install globally
-npm install -g copilot-remote
-copilot-remote --token $BOT_TOKEN --github-token $GITHUB_TOKEN
-
-# Or use environment variables
-export COPILOT_REMOTE_BOT_TOKEN=your-bot-token
-export GITHUB_TOKEN=your-github-token
+npm i -g copilot-remote
+export COPILOT_REMOTE_BOT_TOKEN=your-telegram-bot-token
 copilot-remote
 ```
 
-## Options
+Or one-liner:
 
-| Flag | Env Var | Description |
-|------|---------|-------------|
-| `--token`, `-t` | `COPILOT_REMOTE_BOT_TOKEN` | Telegram bot token |
-| `--github-token`, `-g` | `GITHUB_TOKEN` | GitHub PAT for Copilot |
-| `--workdir`, `-w` | `COPILOT_REMOTE_WORKDIR` | Working directory (default: `~`) |
-| `--binary`, `-b` | `COPILOT_REMOTE_BINARY` | Path to copilot binary |
-| `--allowed-users`, `-u` | `COPILOT_REMOTE_ALLOWED_USERS` | Comma-separated Telegram user IDs |
+```bash
+COPILOT_REMOTE_BOT_TOKEN=xxx npx copilot-remote
+```
 
 ## Features
 
-- **Streamed responses** — Messages update in real-time as Copilot thinks and responds
-- **Status reactions** — Your message gets emoji reactions showing what Copilot is doing (🤔 thinking, 👨‍💻 coding, ⚡ web, 👍 done)
-- **Session persistence** — Conversation context maintained via `--resume`
-- **Model selection** — Switch between Claude, GPT, Gemini from the `/config` menu
-- **Tool visibility** — See what tools Copilot is using (file reads, bash commands, etc.)
-- **Reply context** — Quote-reply to any message and Copilot gets the context
-- **Interactive config** — `/config` with inline buttons to toggle settings
+- **Streaming** — edit-in-place responses, just like ChatGPT
+- **Tool calls** — see what Copilot is doing (read, edit, run, search)
+- **Permissions** — approve/deny tool calls inline, or enable autopilot
+- **Models** — switch models live via `/config` inline keyboard
+- **Agents** — use custom Copilot agents from your workspace
+- **Commands** — `/plan`, `/fleet`, `/research`, `/diff`, `/review`, `/compact`, and more
+- **Config** — toggle thinking, tools, usage, reactions, autopilot
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Fresh session (clear history) |
-| `/config` | Toggle settings (thinking, tools, usage, model) |
-| `/cd [dir]` | Change working directory |
-| `/status` | Session status |
+| `/new` | Fresh session |
 | `/stop` | Kill session |
-| `/help` | Show all commands |
+| `/cd [dir]` | Change working directory |
+| `/status` | Model, mode, quota |
+| `/config` | Settings menu |
+| `/plan [task]` | Plan mode toggle or create plan |
+| `/autopilot` | Toggle auto-approve all tools |
+| `/fleet [task]` | Parallel subagents |
+| `/agent [name]` | Switch custom agent |
+| `/research <topic>` | Deep research |
+| `/diff` | Review uncommitted changes |
+| `/review` | Code review |
+| `/compact` | Compress context |
+| `/tools` | List available tools |
+| `/files` | Browse workspace files |
+| `/usage` | Quota and requests |
+| `/debug` | Toggle debug logging |
 
-Or just type a prompt — sessions auto-start.
+## Configuration
 
-## Run as macOS Service
+Environment variables:
 
-```bash
-# Create a launchd plist (auto-starts on login, auto-restarts on crash)
-cat > ~/Library/LaunchAgents/com.copilot-remote.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.copilot-remote</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$(which copilot-remote)</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>COPILOT_REMOTE_BOT_TOKEN</key><string>YOUR_BOT_TOKEN</string>
-        <key>GITHUB_TOKEN</key><string>YOUR_GITHUB_TOKEN</string>
-        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>HOME</key><string>$HOME</string>
-    </dict>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/copilot-remote.log</string>
-    <key>StandardErrorPath</key><string>/tmp/copilot-remote.log</string>
-</dict>
-</plist>
-EOF
+| Variable | Description |
+|----------|-------------|
+| `COPILOT_REMOTE_BOT_TOKEN` | Telegram bot token (required) |
+| `COPILOT_REMOTE_ALLOWED_USERS` | Comma-separated Telegram user IDs |
+| `COPILOT_REMOTE_WORKDIR` | Working directory (default: cwd) |
+| `COPILOT_REMOTE_BINARY` | Path to copilot binary |
+| `COPILOT_REMOTE_DEBUG` | Set to `1` for debug logging |
 
-launchctl load ~/Library/LaunchAgents/com.copilot-remote.plist
+Or create `.copilot-remote.json`:
+
+```json
+{
+  "botToken": "xxx",
+  "allowedUsers": ["123456"],
+  "workDir": "/home/user/projects"
+}
 ```
 
-## How It Works
-
-Each message spawns a Copilot CLI process with `--output-format json` for structured JSONL streaming. Session continuity is maintained via `--resume <sessionId>`. The bot is a thin relay — Copilot manages sessions, tools, and context natively.
+## Architecture
 
 ```
-You (Telegram) → Bot → copilot -p "prompt" --output-format json → JSONL events → Bot → You
+src/
+  client.ts          — Platform-agnostic Client interface
+  session.ts         — Copilot SDK wrapper
+  index.ts           — Bridge: commands, streaming, config
+  telegram.ts        — Raw Telegram Bot API
+  clients/
+    telegram.ts      — TelegramClient adapter
+  log.ts             — Debug logger
 ```
+
+Adding a new platform: implement `Client` interface, swap one line in `main()`.
+
+## Requirements
+
+- Node.js >= 20
+- GitHub Copilot CLI installed and authenticated (`copilot auth`)
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
 
 ## License
 
 MIT
-
-## Inspiration
-
-Inspired by [OpenClaw](https://github.com/openclaw/openclaw) — an AI agent that bridges to messaging platforms via structured events. Copilot Remote applies the same pattern to GitHub Copilot CLI.

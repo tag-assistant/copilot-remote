@@ -18,7 +18,9 @@ export class TelegramBridge {
   private baseUrl: string;
   private offset = 0;
   private polling = false;
-  private onMessage: ((text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void) | null = null;
+  private onMessage:
+    | ((text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void)
+    | null = null;
   private onCallback: ((callbackId: string, data: string, chatId: string, messageId: number) => void) | null = null;
   private onReaction: ((emoji: string, chatId: string, messageId: number) => void) | null = null;
   private pairedUser: string | null = null;
@@ -30,7 +32,9 @@ export class TelegramBridge {
     }
   }
 
-  setMessageHandler(handler: (text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void): void {
+  setMessageHandler(
+    handler: (text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void,
+  ): void {
     this.onMessage = handler;
   }
 
@@ -73,7 +77,13 @@ export class TelegramBridge {
               continue;
             }
 
-            this.onMessage?.(msg.text, String(msg.chat.id), msg.message_id, msg.reply_to_message?.text, msg.reply_to_message?.message_id);
+            this.onMessage?.(
+              msg.text,
+              String(msg.chat.id),
+              msg.message_id,
+              msg.reply_to_message?.text,
+              msg.reply_to_message?.message_id,
+            );
           }
 
           // Handle callback queries (inline button presses)
@@ -96,9 +106,7 @@ export class TelegramBridge {
             const rChatId = String(r.chat?.id ?? '');
             const rMsgId = r.message_id;
             const userId = String(r.user?.id ?? r.actor_chat?.id ?? '');
-            const newEmojis = (r.new_reaction ?? [])
-              .filter((e: any) => e.type === 'emoji')
-              .map((e: any) => e.emoji);
+            const newEmojis = (r.new_reaction ?? []).filter((e: any) => e.type === 'emoji').map((e: any) => e.emoji);
 
             if (userId === this.pairedUser && rChatId && newEmojis.length > 0) {
               for (const emoji of newEmojis) {
@@ -119,7 +127,11 @@ export class TelegramBridge {
     this.polling = false;
   }
 
-  async sendMessage(chatId: string | number, text: string, opts?: { replyTo?: number; disableLinkPreview?: boolean }): Promise<number | null> {
+  async sendMessage(
+    chatId: string | number,
+    text: string,
+    opts?: { replyTo?: number; disableLinkPreview?: boolean },
+  ): Promise<number | null> {
     const chunks = this.splitMessage(text);
     let lastMsgId: number | null = null;
 
@@ -134,7 +146,9 @@ export class TelegramBridge {
         return await this.api('sendMessage', {
           chat_id: chatId,
           text: chunk,
-          ...(opts?.replyTo ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } } : {}),
+          ...(opts?.replyTo
+            ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } }
+            : {}),
           ...(opts?.disableLinkPreview ? { link_preview_options: { is_disabled: true } } : {}),
         });
       });
@@ -184,36 +198,41 @@ export class TelegramBridge {
     }).catch(() => {});
   }
 
-  async sendMessageWithButtons(chatId: string | number, text: string, buttons: { text: string; data: string }[][]): Promise<number | null> {
+  async sendMessageWithButtons(
+    chatId: string | number,
+    text: string,
+    buttons: { text: string; data: string }[][],
+  ): Promise<number | null> {
     const res = await this.api('sendMessage', {
       chat_id: chatId,
       text,
       parse_mode: 'Markdown',
       reply_markup: {
-        inline_keyboard: buttons.map(row =>
-          row.map(btn => ({ text: btn.text, callback_data: btn.data }))
-        ),
+        inline_keyboard: buttons.map((row) => row.map((btn) => ({ text: btn.text, callback_data: btn.data }))),
       },
     }).catch(async () => {
       return await this.api('sendMessage', {
         chat_id: chatId,
         text,
         reply_markup: {
-          inline_keyboard: buttons.map(row =>
-            row.map(btn => ({ text: btn.text, callback_data: btn.data }))
-          ),
+          inline_keyboard: buttons.map((row) => row.map((btn) => ({ text: btn.text, callback_data: btn.data }))),
         },
       });
     });
     return res?.result?.message_id ?? null;
   }
 
-  async editMessageButtons(chatId: string | number, messageId: number, text: string, buttons?: { text: string; data: string }[][]): Promise<void> {
-    const markup = buttons ? {
-      inline_keyboard: buttons.map(row =>
-        row.map(btn => ({ text: btn.text, callback_data: btn.data }))
-      ),
-    } : { inline_keyboard: [] };
+  async editMessageButtons(
+    chatId: string | number,
+    messageId: number,
+    text: string,
+    buttons?: { text: string; data: string }[][],
+  ): Promise<void> {
+    const markup = buttons
+      ? {
+          inline_keyboard: buttons.map((row) => row.map((btn) => ({ text: btn.text, callback_data: btn.data }))),
+        }
+      : { inline_keyboard: [] };
 
     await this.api('editMessageText', {
       chat_id: chatId,
@@ -276,7 +295,7 @@ export class TelegramBridge {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const json = await res.json() as any;
+    const json = (await res.json()) as any;
     if (!json.ok) {
       throw new Error('Telegram API error: ' + JSON.stringify(json));
     }
@@ -285,5 +304,5 @@ export class TelegramBridge {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

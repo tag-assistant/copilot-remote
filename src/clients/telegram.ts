@@ -24,7 +24,9 @@ export class TelegramClient implements Client {
     await this.bridge.startPolling();
   }
 
-  stop() { this.bridge.stopPolling(); }
+  stop() {
+    this.bridge.stopPolling();
+  }
 
   sendMessage(chatId: string, text: string, opts?: MessageOptions) {
     return this.bridge.sendMessage(chatId, text, opts);
@@ -38,9 +40,15 @@ export class TelegramClient implements Client {
   editButtons(chatId: string, msgId: number, text: string, buttons: Button[][]) {
     return this.bridge.editMessageButtons(chatId, msgId, text, buttons);
   }
-  sendTyping(chatId: string) { return this.bridge.sendTyping(chatId); }
-  setReaction(chatId: string, msgId: number, emoji: string) { return this.bridge.setReaction(chatId, msgId, emoji); }
-  removeReaction(chatId: string, msgId: number) { return this.bridge.removeReaction(chatId, msgId); }
+  sendTyping(chatId: string) {
+    return this.bridge.sendTyping(chatId);
+  }
+  setReaction(chatId: string, msgId: number, emoji: string) {
+    return this.bridge.setReaction(chatId, msgId, emoji);
+  }
+  removeReaction(chatId: string, msgId: number) {
+    return this.bridge.removeReaction(chatId, msgId);
+  }
 
   onMessage?: Client['onMessage'];
   onCallback?: Client['onCallback'];
