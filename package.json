@@ -9,11 +9,16 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["copilot", "telegram", "remote", "cli", "agent"],
+  "keywords": [
+    "copilot",
+    "telegram",
+    "remote",
+    "cli",
+    "agent"
+  ],
   "author": "tag-assistant",
   "license": "MIT",
   "dependencies": {
-    "node-pty": "^1.0.0",
     "strip-ansi": "^7.1.0"
   },
   "devDependencies": {

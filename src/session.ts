@@ -1,13 +1,14 @@
 // ============================================================
-// Copilot Remote — PTY Session Manager
+// Copilot Remote — Session Manager
 // ============================================================
-// Spawns and manages a Copilot CLI session in a pseudo-terminal.
+// Spawns and manages a Copilot CLI session via child_process.
 // Handles input/output, ANSI stripping, and response detection.
 // ============================================================
 
-import * as pty from 'node-pty';
+import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import stripAnsi from 'strip-ansi';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
 
 export interface SessionOptions {
   cwd: string;
@@ -15,25 +16,14 @@ export interface SessionOptions {
   env?: Record<string, string>;
 }
 
-export interface SessionEvents {
-  output: (text: string) => void;
-  response: (text: string) => void;
-  exit: (code: number) => void;
-  error: (err: Error) => void;
-  waiting: () => void; // Copilot is waiting for input
-}
-
 export class CopilotSession extends EventEmitter {
-  private ptyProcess: pty.IPty | null = null;
+  private proc: ChildProcessWithoutNullStreams | null = null;
   private buffer = '';
   private responseBuffer = '';
   private collecting = false;
   private collectTimer: NodeJS.Timeout | null = null;
   private _alive = false;
 
-  // Copilot CLI prompt patterns
-  // The CLI shows a prompt like "❯ " or "copilot> " when waiting for input
-  // And shows tool approval prompts like "Allow <tool>? (y/n)"
   private static PROMPT_PATTERNS = [
     /❯\s*$/,
     /copilot>\s*$/,
@@ -42,9 +32,8 @@ export class CopilotSession extends EventEmitter {
     />\s*$/,
   ];
 
-  // Patterns that indicate a response is still streaming
   private static STREAMING_PATTERNS = [
-    /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/, // spinners
+    /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
     /thinking\.\.\./i,
     /running\.\.\./i,
   ];
@@ -60,46 +49,35 @@ export class CopilotSession extends EventEmitter {
     console.log('[Session] Spawning: ' + userShell + ' -l -c ' + copilotBin);
     console.log('[Session] CWD: ' + options.cwd);
 
-    // Verify CWD exists
-    const fs = require('fs');
     if (!fs.existsSync(options.cwd)) {
       throw new Error('Working directory does not exist: ' + options.cwd);
     }
 
     try {
-      // First test: can we spawn anything at all?
-      this.ptyProcess = pty.spawn('/bin/zsh', ['-c', copilotBin], {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 40,
+      this.proc = spawn(userShell, ['-l', '-c', copilotBin], {
         cwd: options.cwd,
-        env: {
-          ...process.env,
-          ...options.env,
-        } as Record<string, string>,
+        env: { ...process.env, ...options.env, TERM: 'xterm-256color' },
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
-      console.error('[Session] pty.spawn failed:', err);
+      console.error('[Session] spawn failed:', err);
       throw err;
     }
 
-    console.log('[Session] PTY spawned, pid: ' + this.ptyProcess.pid);
-
+    console.log('[Session] Process spawned, pid: ' + this.proc.pid);
     this._alive = true;
 
-    this.ptyProcess.onData((data: string) => {
-      const cleaned = stripAnsi(data);
+    const handleData = (data: Buffer) => {
+      const cleaned = stripAnsi(data.toString());
       this.buffer += cleaned;
-      console.log('[Session] raw: ' + JSON.stringify(cleaned.slice(0, 200)));
+      console.log('[Session] out: ' + JSON.stringify(cleaned.slice(0, 200)));
       this.emit('output', cleaned);
 
-      // Accumulate response text
       if (this.collecting) {
         this.responseBuffer += cleaned;
         this.resetCollectTimer();
       }
 
-      // Check if Copilot is now waiting for input
       if (this.isPrompt(this.buffer)) {
         if (this.collecting) {
           this.finishCollecting();
@@ -107,30 +85,36 @@ export class CopilotSession extends EventEmitter {
           this.emit('waiting');
         }
       }
-    });
+    };
 
-    this.ptyProcess.onExit(({ exitCode }) => {
-      console.log('[Session] Process exited with code: ' + exitCode);
+    this.proc.stdout.on('data', handleData);
+    this.proc.stderr.on('data', handleData);
+
+    this.proc.on('close', (code) => {
+      console.log('[Session] Process exited with code: ' + code);
       this._alive = false;
-      this.emit('exit', exitCode);
+      this.emit('exit', code ?? 1);
     });
 
-    // Wait for initial prompt
+    this.proc.on('error', (err) => {
+      console.error('[Session] Process error:', err);
+      this._alive = false;
+      this.emit('error', err);
+    });
+
     await this.waitForPrompt(30_000);
   }
 
   send(text: string): void {
-    if (!this.ptyProcess || !this._alive) {
+    if (!this.proc || !this._alive) {
       throw new Error('Session not running');
     }
 
-    // Start collecting the response
     this.buffer = '';
     this.responseBuffer = '';
     this.collecting = true;
 
-    // Send the message + Enter
-    this.ptyProcess.write(text + '\r');
+    this.proc.stdin.write(text + '\n');
   }
 
   approve(): void {
@@ -141,14 +125,10 @@ export class CopilotSession extends EventEmitter {
     this.send('n');
   }
 
-  resize(cols: number, rows: number): void {
-    this.ptyProcess?.resize(cols, rows);
-  }
-
   kill(): void {
     this._alive = false;
-    this.ptyProcess?.kill();
-    this.ptyProcess = null;
+    this.proc?.kill();
+    this.proc = null;
   }
 
   private isPrompt(text: string): boolean {
@@ -165,7 +145,6 @@ export class CopilotSession extends EventEmitter {
     if (this.collectTimer) {
       clearTimeout(this.collectTimer);
     }
-    // Wait 1.5s of silence before considering response complete
     this.collectTimer = setTimeout(() => {
       if (this.collecting && !this.isStreaming(this.responseBuffer)) {
         this.finishCollecting();
@@ -188,13 +167,9 @@ export class CopilotSession extends EventEmitter {
   }
 
   private cleanResponse(raw: string): string {
-    // Remove the echoed input (first line) and trailing prompt
     const lines = raw.split('\n');
-
-    // Skip first line (echoed command) and last line (prompt)
     const content = lines.slice(1);
 
-    // Remove trailing prompt lines
     while (content.length > 0) {
       const last = content[content.length - 1].trim();
       if (last === '' || last === '❯' || last === '>' || last.endsWith('(y/n)')) {
@@ -213,7 +188,7 @@ export class CopilotSession extends EventEmitter {
         reject(new Error('Timeout waiting for Copilot CLI prompt'));
       }, timeoutMs);
 
-      const check = (text: string) => {
+      const check = () => {
         if (this.isPrompt(this.buffer)) {
           clearTimeout(timeout);
           this.removeListener('output', check);
@@ -223,7 +198,6 @@ export class CopilotSession extends EventEmitter {
 
       this.on('output', check);
 
-      // Check immediately in case prompt already appeared
       if (this.isPrompt(this.buffer)) {
         clearTimeout(timeout);
         this.removeListener('output', check);
