@@ -8,10 +8,94 @@ import {
   type PermissionRequest,
   type PermissionRequestResult,
   type SessionConfig,
+  type CopilotClientOptions,
 } from '@github/copilot-sdk';
 import { EventEmitter } from 'events';
 import { log } from './log.js';
 import { createTelegramTools } from './tools.js';
+
+/** Reasoning effort levels supported by the SDK */
+type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+/** User input request from the agent (ask_user tool) */
+interface UserInputRequest {
+  question: string;
+  choices?: string[];
+}
+
+/** Event data from SDK session events */
+interface SessionEventData {
+  content?: string;
+  text?: string;
+  name?: string;
+  toolName?: string;
+  arguments?: unknown;
+  exitCode?: number;
+  success?: boolean;
+  message?: string;
+  [key: string]: unknown;
+}
+
+/** Quota snapshot from the account API */
+export interface QuotaSnapshot {
+  usedRequests: number;
+  entitlementRequests: number;
+  remainingPercentage: number;
+}
+
+/** Quota response from the account API */
+export interface QuotaResponse {
+  quotaSnapshots?: QuotaSnapshot[];
+}
+
+/** Agent info from the agent API */
+export interface AgentInfo {
+  name: string;
+  [key: string]: unknown;
+}
+
+/** Agent list response */
+export interface AgentListResponse {
+  agents?: AgentInfo[];
+}
+
+/** Current agent response */
+export interface CurrentAgentResponse {
+  agent?: AgentInfo;
+}
+
+/** Current model response */
+export interface CurrentModelResponse {
+  modelId?: string;
+}
+
+/** Compact response */
+export interface CompactResponse {
+  tokensFreed?: number;
+}
+
+/** Plan response */
+export interface PlanResponse {
+  content?: string;
+}
+
+/** Tool info from the tools API */
+export interface ToolInfo {
+  name: string;
+  [key: string]: unknown;
+}
+
+/** Tools list response */
+export interface ToolsListResponse {
+  tools?: ToolInfo[];
+}
+
+/** Session message */
+export interface SessionMessage {
+  type: string;
+  content?: string;
+  [key: string]: unknown;
+}
 
 export interface SessionOptions {
   cwd: string;
@@ -19,7 +103,7 @@ export interface SessionOptions {
   model?: string;
   autopilot?: boolean;
   agent?: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: ReasoningEffort;
   topicContext?: string; // e.g. "Fix auth bug" — injected into system prompt
 }
 
@@ -76,7 +160,7 @@ export class Session extends EventEmitter {
         ].join('\n'),
       },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
-      onUserInputRequest: (req: any) => this.handleUserInput(req),
+      onUserInputRequest: (req: UserInputRequest) => this.handleUserInput(req),
       infiniteSessions: { enabled: true, backgroundCompactionThreshold: 0.8, bufferExhaustionThreshold: 0.95 },
       tools: createTelegramTools({
         sendNotification: async (text: string) => {
@@ -84,7 +168,7 @@ export class Session extends EventEmitter {
         },
       }),
       ...(opts.model ? { model: opts.model } : {}),
-      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort as any } : {}),
+      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     };
   }
 
@@ -92,7 +176,7 @@ export class Session extends EventEmitter {
     this.cwd = opts.cwd;
     this._autopilot = opts.autopilot ?? false;
 
-    const clientOpts: Record<string, any> = { useStdio: true };
+    const clientOpts: CopilotClientOptions = { useStdio: true };
     if (opts.binary) clientOpts.cliPath = opts.binary;
 
     this.client = new CopilotClient(clientOpts);
@@ -104,7 +188,7 @@ export class Session extends EventEmitter {
   }
 
   private handleEvent(e: SessionEvent): void {
-    const d = e.data as any;
+    const d = e.data as SessionEventData;
     switch (e.type) {
       case 'assistant.message_delta':
         this.emit('delta', d.content ?? d.text ?? '');
@@ -155,7 +239,7 @@ export class Session extends EventEmitter {
     });
   }
 
-  private async handleUserInput(req: any): Promise<{ answer: string; wasFreeform: boolean }> {
+  private async handleUserInput(req: UserInputRequest): Promise<{ answer: string; wasFreeform: boolean }> {
     this.emit('user_input_request', req);
     log.debug('User input request:', req.question);
     return new Promise<{ answer: string; wasFreeform: boolean }>((resolve) => {
@@ -200,12 +284,15 @@ export class Session extends EventEmitter {
       const result = await this.session!.sendAndWait({ prompt }, 300_000);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
+      const resultObj = result as Record<string, unknown>;
+      const resultData = (resultObj?.data as Record<string, unknown>) ?? {};
+
       this.off('delta', onDelta);
       resolve({
         content:
           text.trim() ||
-          (result as any)?.data?.content ||
-          (result as any)?.content ||
+          (resultData?.content as string) ||
+          (resultObj?.content as string) ||
           String(result ?? '').slice(0, 500) ||
           '_(no response)_',
       });
@@ -237,52 +324,52 @@ export class Session extends EventEmitter {
     return this.client?.listModels() ?? [];
   }
   async setMode(mode: string) {
-    await this.session!.rpc.mode.set({ mode: mode as any });
+    await this.session!.rpc.mode.set({ mode: mode as 'interactive' | 'plan' | 'autopilot' });
   }
   async getMode(): Promise<string> {
     return (await this.session!.rpc.mode.get()).mode;
   }
-  async compact(): Promise<any> {
-    return this.session!.rpc.compaction.compact();
+  async compact(): Promise<CompactResponse> {
+    return this.session!.rpc.compaction.compact() as Promise<CompactResponse>;
   }
-  async startFleet(prompt?: string): Promise<any> {
+  async startFleet(prompt?: string): Promise<unknown> {
     return this.session!.rpc.fleet.start({ prompt });
   }
-  async listAgents(): Promise<any> {
-    return this.session!.rpc.agent.list();
+  async listAgents(): Promise<AgentListResponse> {
+    return this.session!.rpc.agent.list() as Promise<AgentListResponse>;
   }
-  async selectAgent(name: string): Promise<any> {
+  async selectAgent(name: string): Promise<unknown> {
     return this.session!.rpc.agent.select({ name });
   }
-  async deselectAgent(): Promise<any> {
+  async deselectAgent(): Promise<unknown> {
     return this.session!.rpc.agent.deselect();
   }
-  async getCurrentModel(): Promise<any> {
-    return this.session!.rpc.model.getCurrent();
+  async getCurrentModel(): Promise<CurrentModelResponse> {
+    return this.session!.rpc.model.getCurrent() as Promise<CurrentModelResponse>;
   }
-  async getCurrentAgent(): Promise<any> {
-    return this.session!.rpc.agent.getCurrent();
+  async getCurrentAgent(): Promise<CurrentAgentResponse> {
+    return this.session!.rpc.agent.getCurrent() as Promise<CurrentAgentResponse>;
   }
-  async readPlan(): Promise<any> {
-    return this.session!.rpc.plan.read();
+  async readPlan(): Promise<PlanResponse> {
+    return this.session!.rpc.plan.read() as Promise<PlanResponse>;
   }
-  async deletePlan(): Promise<any> {
+  async deletePlan(): Promise<unknown> {
     return this.session!.rpc.plan.delete();
   }
-  async listTools(): Promise<any> {
-    return (this.client as any).rpc.tools.list({ sessionId: this.session!.sessionId });
+  async listTools(): Promise<ToolsListResponse> {
+    return (this.client as unknown as { rpc: { tools: { list: (opts: { sessionId: string }) => Promise<ToolsListResponse> } } }).rpc.tools.list({ sessionId: this.session!.sessionId! });
   }
-  async getQuota(): Promise<any> {
-    return (this.client as any).rpc.account.getQuota();
+  async getQuota(): Promise<QuotaResponse> {
+    return (this.client as unknown as { rpc: { account: { getQuota: () => Promise<QuotaResponse> } } }).rpc.account.getQuota();
   }
-  async getMessages(): Promise<any[]> {
-    return this.session?.getMessages() ?? [];
+  async getMessages(): Promise<SessionMessage[]> {
+    return (this.session?.getMessages() ?? []) as SessionMessage[];
   }
   async listFiles(): Promise<string[]> {
-    return ((await this.session!.rpc.workspace.listFiles()) as any)?.files ?? [];
+    return ((await this.session!.rpc.workspace.listFiles()) as { files?: string[] })?.files ?? [];
   }
   async readFile(path: string): Promise<string> {
-    return ((await this.session!.rpc.workspace.readFile({ path })) as any)?.content ?? '';
+    return ((await this.session!.rpc.workspace.readFile({ path })) as { content?: string })?.content ?? '';
   }
 
   async newSession(opts?: Partial<SessionOptions>): Promise<void> {
@@ -318,18 +405,18 @@ export class Session extends EventEmitter {
     this._autopilot = opts.autopilot ?? false;
 
     if (!this.client) {
-      const clientOpts: Record<string, any> = { useStdio: true };
+      const clientOpts: CopilotClientOptions = { useStdio: true };
       if (opts.binary) clientOpts.cliPath = opts.binary;
       this.client = new CopilotClient(clientOpts);
       await this.client.start();
     }
 
-    this.session = await this.client.resumeSession(sessionId, this.buildConfig(opts) as any);
+    this.session = await this.client.resumeSession(sessionId, this.buildConfig(opts) as SessionConfig);
     this._alive = true;
     this.session.on((e: SessionEvent) => this.handleEvent(e));
   }
 
-  async listSessions(): Promise<any[]> {
+  async listSessions(): Promise<unknown[]> {
     if (!this.client) return [];
     return this.client.listSessions();
   }

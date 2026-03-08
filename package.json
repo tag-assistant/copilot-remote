@@ -50,10 +50,12 @@
     "@grammyjs/hydrate": "^1.6.0",
     "@grammyjs/parse-mode": "^2.2.1",
     "@grammyjs/runner": "^2.0.3",
-    "grammy": "^1.41.1"
+    "grammy": "^1.41.1",
+    "markdown-it": "^14.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^25.3.5",
     "@typescript-eslint/eslint-plugin": "^8.56.1",
     "@typescript-eslint/parser": "^8.56.1",

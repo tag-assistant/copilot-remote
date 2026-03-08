@@ -1,6 +1,20 @@
 // Copilot Remote — Telegram ↔ Copilot SDK bridge
 import { Session } from './session.js';
-import type { Client } from './client.js';
+import type {
+  QuotaSnapshot,
+  QuotaResponse,
+  AgentInfo,
+  AgentListResponse,
+  CurrentAgentResponse,
+  CurrentModelResponse,
+  CompactResponse,
+  PlanResponse,
+  ToolInfo,
+  ToolsListResponse,
+  SessionMessage,
+} from './session.js';
+import type { Client, MessageOptions, Button } from './client.js';
+import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
 import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
@@ -12,6 +26,25 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
+
+/** Tool execution event emitted by the session */
+interface ToolEvent {
+  toolName: string;
+  arguments?: Record<string, string>;
+  success?: boolean;
+}
+
+/** User input request from the agent */
+interface UserInputRequest {
+  question: string;
+  choices?: string[];
+}
+
+/** ChatConfig boolean keys for dynamic toggle */
+type ChatConfigBooleanKey = 'showUsage' | 'showThinking' | 'showTools' | 'showReactions' | 'autopilot';
+
+/** Reasoning effort level (including 'none' for disabled) */
+type ReasoningEffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 function findBin(name: string): string {
   try {
@@ -125,7 +158,7 @@ async function main(): Promise<void> {
   const pendingPerms = new Map<number, string>();
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
-  let cachedModels: any[] = []; // ModelInfo objects
+  let cachedModels: ModelInfo[] = [];
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
@@ -145,11 +178,11 @@ async function main(): Promise<void> {
     return [cid, tid];
   };
 
-  client.sendMessage = (key: string, text: string, opts?: any) => {
+  client.sendMessage = (key: string, text: string, opts?: MessageOptions) => {
     const [cid, tid] = resolveKey(key);
     return origSendMessage(cid, text, { ...opts, threadId: tid });
   };
-  client.sendButtons = (key: string, text: string, buttons: any) => {
+  client.sendButtons = (key: string, text: string, buttons: Button[][]) => {
     const [cid, tid] = resolveKey(key);
     return origSendButtons(cid, text, buttons, tid);
   };
@@ -157,7 +190,7 @@ async function main(): Promise<void> {
     const [cid] = resolveKey(key);
     return origEditMessage(cid, msgId, text);
   };
-  client.editButtons = (key: string, msgId: number, text: string, buttons: any) => {
+  client.editButtons = (key: string, msgId: number, text: string, buttons: Button[][]) => {
     const [cid] = resolveKey(key);
     return origEditButtons(cid, msgId, text, buttons);
   };
@@ -188,7 +221,7 @@ async function main(): Promise<void> {
       binary: bin,
       model: c.model,
       autopilot: c.autopilot,
-      reasoningEffort: c.reasoningEffort !== 'none' ? (c.reasoningEffort as any) : undefined,
+      reasoningEffort: c.reasoningEffort !== 'none' ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
       agent: c.agent ?? undefined,
       topicContext: client.getTopicName?.(chatId),
     };
@@ -228,8 +261,8 @@ async function main(): Promise<void> {
     let session: Session;
     try {
       session = await getSession(chatId);
-    } catch (err: any) {
-      const msg = err?.message ?? String(err);
+    } catch (err: unknown) {
+      const msg = (err as Error)?.message ?? String(err);
       // If reasoning effort not supported, retry without it
       if (msg.includes('reasoning effort')) {
         const c = cfg(chatId);
@@ -237,8 +270,8 @@ async function main(): Promise<void> {
         setCfg(chatId, c);
         try {
           session = await getSession(chatId);
-        } catch (err2: any) {
-          await client.sendMessage(chatId, '❌ Session failed: ' + (err2?.message ?? String(err2)));
+        } catch (err2: unknown) {
+          await client.sendMessage(chatId, '❌ Session failed: ' + ((err2 as Error)?.message ?? String(err2)));
           return;
         }
       } else {
@@ -312,7 +345,7 @@ async function main(): Promise<void> {
       responseText += t;
       schedEdit();
     };
-    const onToolStart = (t: any) => {
+    const onToolStart = (t: ToolEvent) => {
       client.sendTyping(chatId);
       react('👨‍💻');
       if (!c.showTools) return;
@@ -323,13 +356,13 @@ async function main(): Promise<void> {
       toolLines.push(label + detail);
       schedEdit();
     };
-    const onToolEnd = (t: any) => {
+    const onToolEnd = (t: ToolEvent) => {
       if (!c.showTools || !toolLines.length) return;
       toolLines[toolLines.length - 1] += t.success !== false ? ' ✓' : ' ✗';
       schedEdit();
     };
-    const onPerm = async (req: any) => {
-      const p = req.permissionRequest ?? req;
+    const onPerm = async (req: PermissionRequest) => {
+      const p = (req as PermissionRequest & { permissionRequest?: PermissionRequest }).permissionRequest ?? req;
       const kind = p.kind as PermKind;
 
       // Auto-approve if this kind is allowed
@@ -365,8 +398,8 @@ async function main(): Promise<void> {
     };
 
     const pendingInputs = new Map<number, string>(); // msgId → chatId for user input answers
-    const onUserInput = async (req: any) => {
-      const question = req.question ?? req;
+    const onUserInput = async (req: UserInputRequest) => {
+      const question = req.question ?? String(req);
       const choices = req.choices as string[] | undefined;
       if (choices?.length) {
         const buttons = choices.map((c: string) => [{ text: c, data: 'input:' + c }]);
@@ -419,7 +452,7 @@ async function main(): Promise<void> {
       if (c.showUsage) {
         try {
           const q = await session.getQuota();
-          const s = (q as any)?.quotaSnapshots?.[0];
+          const s = q?.quotaSnapshots?.[0];
           if (s)
             final +=
               '\n\n`' + s.usedRequests + '/' + s.entitlementRequests + ' reqs (' + s.remainingPercentage + '% left)`';
@@ -595,16 +628,16 @@ async function main(): Promise<void> {
             s.getMode().catch(() => null),
             s.getCurrentAgent().catch(() => null),
           ]);
-          if ((model as any)?.modelId) lines.push('🤖 `' + (model as any).modelId + '`');
+          if (model?.modelId) lines.push('🤖 `' + model.modelId + '`');
           if (mode) lines.push((MODE_ICONS[mode] ?? '⚙️') + ' ' + mode);
-          if ((agent as any)?.agent?.name) lines.push('🎭 `' + (agent as any).agent.name + '`');
+          if (agent?.agent?.name) lines.push('🎭 `' + agent.agent.name + '`');
         } catch {
           /* ignore */
         }
 
         try {
           const q = await s.getQuota();
-          const snap = (q as any)?.quotaSnapshots?.[0];
+          const snap = q?.quotaSnapshots?.[0];
           if (snap)
             lines.push(
               '📊 ' +
@@ -651,10 +684,10 @@ async function main(): Promise<void> {
         if (!args[0] && s?.alive) {
           try {
             const r = await s.listAgents();
-            const agents = (r as any)?.agents ?? r;
+            const agents = r?.agents ?? [];
             const lines =
-              Array.isArray(agents) && agents.length
-                ? agents.map((a: any) => '• `' + (a.name ?? a) + '`')
+              agents.length
+                ? agents.map((a: AgentInfo) => '• `' + (a.name ?? a) + '`')
                 : ['No agents found.'];
             await client.sendMessage(chatId, '🤖 *Agents*\n' + lines.join('\n'));
           } catch (e) {
@@ -688,7 +721,7 @@ async function main(): Promise<void> {
             const p = await s.readPlan();
             await client.sendMessage(
               chatId,
-              (p as any)?.content ? '📋 ' + (p as any).content.slice(0, 3800) : '📋 No plan.',
+              p?.content ? '📋 ' + p.content.slice(0, 3800) : '📋 No plan.',
             );
           } else if (args[0] === 'delete') {
             await s.deletePlan();
@@ -729,7 +762,7 @@ async function main(): Promise<void> {
         }
         try {
           const r = await s.compact();
-          await client.sendMessage(chatId, '🗜️ ' + (r as any)?.tokensFreed + ' tokens freed');
+          await client.sendMessage(chatId, '🗜️ ' + (r?.tokensFreed ?? 0) + ' tokens freed');
         } catch (e) {
           await client.sendMessage(chatId, '❌ ' + e);
         }
@@ -743,7 +776,7 @@ async function main(): Promise<void> {
         }
         const msgs = await s.getMessages();
         const types: Record<string, number> = {};
-        for (const m of msgs) types[(m as any).type] = (types[(m as any).type] ?? 0) + 1;
+        for (const m of msgs) types[m.type] = (types[m.type] ?? 0) + 1;
         const lines = ['📊 *Context* (' + msgs.length + ' events)'];
         for (const [t, n] of Object.entries(types)
           .sort((a, b) => b[1] - a[1])
@@ -760,10 +793,10 @@ async function main(): Promise<void> {
         }
         try {
           const q = await s.getQuota();
-          const snaps = (q as any)?.quotaSnapshots;
+          const snaps = q?.quotaSnapshots;
           if (Array.isArray(snaps)) {
             const lines = snaps.map(
-              (s: any) =>
+              (s: QuotaSnapshot) =>
                 '• ' + s.usedRequests + '/' + s.entitlementRequests + ' (' + s.remainingPercentage + '% left)',
             );
             await client.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
@@ -781,9 +814,9 @@ async function main(): Promise<void> {
         }
         try {
           const r = await s.listTools();
-          const tools = (r as any)?.tools ?? r;
-          if (Array.isArray(tools) && tools.length) {
-            const lines = tools.slice(0, 30).map((t: any) => '• `' + (t.name ?? t) + '`');
+          const tools = r?.tools ?? [];
+          if (tools.length) {
+            const lines = tools.slice(0, 30).map((t: ToolInfo) => '• `' + (t.name ?? t) + '`');
             await client.sendMessage(chatId, '🔧 *Tools* (' + tools.length + ')\n' + lines.join('\n'));
           } else await client.sendMessage(chatId, '🔧 No tools.');
         } catch (e) {
@@ -968,17 +1001,17 @@ async function main(): Promise<void> {
       try {
         let s = sessions.get(chatId);
         if (!s?.alive) s = await getSession(chatId);
-        cachedModels = (await s.listModels()) as any[];
+        cachedModels = await s.listModels();
         log.info(
           'Models:',
-          cachedModels.map((m: any) => m.id ?? m.name ?? m),
+          cachedModels.map((m) => m.id ?? m.name ?? m),
         );
       } catch {
         /* ignore */
       }
     }
     const modelIds = cachedModels.length
-      ? cachedModels.map((m: any) => m.id ?? m.name ?? m).filter(Boolean)
+      ? cachedModels.map((m) => m.id ?? m.name ?? String(m)).filter(Boolean)
       : ['claude-sonnet-4', 'gpt-5.2', 'gemini-3-pro-preview'];
     const buttons: { text: string; data: string }[][] = [];
     for (let i = 0; i < modelIds.length; i += 2) {
@@ -1118,7 +1151,7 @@ async function main(): Promise<void> {
             binary: bin,
             model: c.model,
             autopilot: c.autopilot,
-            reasoningEffort: level as any,
+            reasoningEffort: level as 'low' | 'medium' | 'high' | 'xhigh',
           });
           sessions.set(chatId, s);
         } catch {
@@ -1156,11 +1189,12 @@ async function main(): Promise<void> {
     if (data.startsWith('dsp:')) {
       const key = data.slice(4) as keyof ChatConfig;
       const c = cfg(chatId);
-      if (key in c && typeof (c as any)[key] === 'boolean') {
-        (c as any)[key] = !(c as any)[key];
+      const rec = c as Record<string, unknown>;
+      if (key in c && typeof rec[key] === 'boolean') {
+        rec[key] = !rec[key];
         setCfg(chatId, c);
         const label = key.replace('show', '');
-        const state = (c as any)[key] ? '✅ ON' : '⬜ OFF';
+        const state = rec[key] ? '✅ ON' : '⬜ OFF';
         client.answerCallback?.(callbackId, label + ': ' + state);
       }
       return sendDisplayMenu(chatId, msgId);
@@ -1193,8 +1227,9 @@ async function main(): Promise<void> {
     if (data.startsWith('cfg:')) {
       const key = data.slice(4) as keyof ChatConfig;
       const c = cfg(chatId);
-      if (key in c && typeof (c as any)[key] === 'boolean') {
-        (c as any)[key] = !(c as any)[key];
+      const rec = c as Record<string, unknown>;
+      if (key in c && typeof rec[key] === 'boolean') {
+        rec[key] = !rec[key];
         setCfg(chatId, c);
         if (key === 'autopilot') {
           const s = sessions.get(chatId);
