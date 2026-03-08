@@ -41,7 +41,7 @@ copilot
 
 1. Open Telegram and message [@BotFather](https://t.me/botfather)
 2. Send `/newbot`
-3. Choose a name (e.g. "My Copilot Remote")
+3. Choose a name (e.g. "Copilot")
 4. Choose a username (e.g. `my_copilot_remote_bot`)
 5. BotFather gives you a token like `123456:ABC-DEF...` — copy it
 
