@@ -18,8 +18,9 @@ export class TelegramBridge {
   private baseUrl: string;
   private offset = 0;
   private polling = false;
-  private onMessage: ((text: string, chatId: string, messageId: number, replyText?: string) => void) | null = null;
+  private onMessage: ((text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void) | null = null;
   private onCallback: ((callbackId: string, data: string, chatId: string, messageId: number) => void) | null = null;
+  private onReaction: ((emoji: string, chatId: string, messageId: number) => void) | null = null;
   private pairedUser: string | null = null;
 
   constructor(private config: TelegramConfig) {
@@ -29,12 +30,16 @@ export class TelegramBridge {
     }
   }
 
-  setMessageHandler(handler: (text: string, chatId: string, messageId: number, replyText?: string) => void): void {
+  setMessageHandler(handler: (text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void): void {
     this.onMessage = handler;
   }
 
   setCallbackHandler(handler: (callbackId: string, data: string, chatId: string, messageId: number) => void): void {
     this.onCallback = handler;
+  }
+
+  setReactionHandler(handler: (emoji: string, chatId: string, messageId: number) => void): void {
+    this.onReaction = handler;
   }
 
   async startPolling(): Promise<void> {
@@ -68,7 +73,7 @@ export class TelegramBridge {
               continue;
             }
 
-            this.onMessage?.(msg.text, String(msg.chat.id), msg.message_id, msg.reply_to_message?.text);
+            this.onMessage?.(msg.text, String(msg.chat.id), msg.message_id, msg.reply_to_message?.text, msg.reply_to_message?.message_id);
           }
 
           // Handle callback queries (inline button presses)
@@ -83,6 +88,23 @@ export class TelegramBridge {
             }
             // Always answer to dismiss loading state
             await this.api('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
+          }
+
+          // Handle message reactions
+          if (update.message_reaction) {
+            const r = update.message_reaction;
+            const rChatId = String(r.chat?.id ?? '');
+            const rMsgId = r.message_id;
+            const userId = String(r.user?.id ?? r.actor_chat?.id ?? '');
+            const newEmojis = (r.new_reaction ?? [])
+              .filter((e: any) => e.type === 'emoji')
+              .map((e: any) => e.emoji);
+
+            if (userId === this.pairedUser && rChatId && newEmojis.length > 0) {
+              for (const emoji of newEmojis) {
+                this.onReaction?.(emoji, rChatId, rMsgId);
+              }
+            }
           }
         }
       } catch (err) {
@@ -243,7 +265,7 @@ export class TelegramBridge {
     const res = await this.api('getUpdates', {
       offset: this.offset,
       timeout: 30,
-      allowed_updates: ['message', 'callback_query'],
+      allowed_updates: ['message', 'callback_query', 'message_reaction'],
     });
     return res.result ?? [];
   }

@@ -95,6 +95,9 @@ async function main(): Promise<void> {
   // Models loaded dynamically from SDK
   let cachedModels: string[] = [];
 
+  // Track pending permission approval messages: telegram msgId → chatId
+  const pendingPermissions = new Map<number, string>();
+
   const chatConfigs = new Map<string, ChatConfig>();
   const getConfig = (chatId: string): ChatConfig => {
     return chatConfigs.get(chatId) ?? { ...defaultConfig };
@@ -103,8 +106,25 @@ async function main(): Promise<void> {
     chatConfigs.set(chatId, cfg);
   };
 
-  telegram.setMessageHandler(async (text: string, chatId: string, messageId: number, replyText?: string) => {
+  telegram.setMessageHandler(async (text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => {
     console.log('[Message] ' + chatId + ': ' + text + (replyText ? ' [reply to: ' + replyText.slice(0, 50) + '...]' : ''));
+
+    // Check if replying to a permission message
+    if (replyToMsgId && pendingPermissions.has(replyToMsgId)) {
+      const lower = text.toLowerCase().trim();
+      const session = sessions.get(chatId);
+      if (session?.alive && (lower === 'yes' || lower === 'y' || lower === 'approve' || lower === '👍')) {
+        session.approve();
+        pendingPermissions.delete(replyToMsgId);
+        await telegram.editMessageButtons(chatId, replyToMsgId, '✅ Approved', []);
+        return;
+      } else if (session?.alive && (lower === 'no' || lower === 'n' || lower === 'deny' || lower === '👎')) {
+        session.deny();
+        pendingPermissions.delete(replyToMsgId);
+        await telegram.editMessageButtons(chatId, replyToMsgId, '❌ Denied', []);
+        return;
+      }
+    }
 
     if (text.startsWith('/')) {
       await handleCommand(text, chatId, messageId);
@@ -276,6 +296,30 @@ async function main(): Promise<void> {
     session.on('tool_start', onToolStart);
     session.on('tool_complete', onToolComplete);
 
+    // Permission request → send inline buttons
+    const onPermission = async (req: any) => {
+      const kind = req.kind ?? 'action';
+      let description = '';
+      if (kind === 'shell' && req.fullCommandText) {
+        description = '`' + req.fullCommandText.slice(0, 200) + '`';
+      } else if (req.intention) {
+        description = req.intention;
+      } else {
+        description = JSON.stringify(req).slice(0, 200);
+      }
+
+      const text = '🔐 *Permission Required*\n' + description;
+      const buttons = [
+        [
+          { text: '👍 Approve', data: 'perm:yes' },
+          { text: '👎 Deny', data: 'perm:no' },
+        ],
+      ];
+      const msgId = await telegram.sendMessageWithButtons(chatId, text, buttons);
+      if (msgId) pendingPermissions.set(msgId, chatId);
+    };
+    session.on('permission_request', onPermission);
+
     // Track usage for footer
     let resultData: any = null;
     const onResult = (data: any) => { resultData = data; };
@@ -290,6 +334,7 @@ async function main(): Promise<void> {
       session.off('delta', onDelta);
       session.off('tool_start', onToolStart);
       session.off('tool_complete', onToolComplete);
+      session.off('permission_request', onPermission);
       session.off('result', onResult);
 
       // Build final message: clean response + usage footer
@@ -333,6 +378,7 @@ async function main(): Promise<void> {
       session.off('delta', onDelta);
       session.off('tool_start', onToolStart);
       session.off('tool_complete', onToolComplete);
+      session.off('permission_request', onPermission);
       session.off('result', onResult);
       await react('😱');
       await telegram.sendMessage(chatId, '❌ ' + String(err));
@@ -752,7 +798,36 @@ async function main(): Promise<void> {
     await telegram.editMessageButtons(chatId, editMsgId, text, buttons);
   }
 
+  // Reaction-based permission approval
+  telegram.setReactionHandler(async (emoji: string, chatId: string, msgId: number) => {
+    if (!pendingPermissions.has(msgId)) return;
+    const session = sessions.get(chatId);
+    if (!session?.alive) return;
+
+    if (emoji === '👍' || emoji === '✅') {
+      session.approve();
+      pendingPermissions.delete(msgId);
+      await telegram.editMessageButtons(chatId, msgId, '✅ Approved', []);
+    } else if (emoji === '👎' || emoji === '❌') {
+      session.deny();
+      pendingPermissions.delete(msgId);
+      await telegram.editMessageButtons(chatId, msgId, '❌ Denied', []);
+    }
+  });
+
   telegram.setCallbackHandler(async (callbackId: string, data: string, chatId: string, msgId: number) => {
+    // Permission approval/denial
+    if (data === 'perm:yes' || data === 'perm:no') {
+      const session = sessions.get(chatId);
+      if (!session?.alive) return;
+      const approved = data === 'perm:yes';
+      if (approved) session.approve(); else session.deny();
+      pendingPermissions.delete(msgId);
+      await telegram.editMessageButtons(chatId, msgId, 
+        approved ? '✅ Approved' : '❌ Denied', []);
+      return;
+    }
+
     if (data === 'cfg:modelPicker') {
       await sendModelPicker(chatId, msgId);
       return;
