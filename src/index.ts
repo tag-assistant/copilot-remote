@@ -57,6 +57,7 @@ async function main(): Promise<void> {
   const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
 
   // ── Per-chat state ──
+  type PermKind = 'shell' | 'write' | 'mcp' | 'read' | 'url' | 'custom-tool';
   interface ChatConfig {
     showUsage: boolean;
     showThinking: boolean;
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
     autopilot: boolean;
     model: string;
     agent: string | null;
+    autoApprove: Record<PermKind, boolean>;
   }
   const defaultCfg: ChatConfig = {
     showUsage: false,
@@ -74,6 +76,14 @@ async function main(): Promise<void> {
     autopilot: false,
     model: 'claude-sonnet-4',
     agent: null,
+    autoApprove: {
+      read: true, // reading files is safe
+      shell: false,
+      write: false,
+      mcp: false,
+      url: false,
+      'custom-tool': false,
+    },
   };
 
   const sessions = new Map<string, Session>();
@@ -204,8 +214,16 @@ async function main(): Promise<void> {
     };
     const onPerm = async (req: any) => {
       const p = req.permissionRequest ?? req;
+      const kind = p.kind as PermKind;
+
+      // Auto-approve if this kind is allowed
+      if (c.autoApprove[kind]) {
+        session.approve();
+        return;
+      }
+
       const icons: Record<string, string> = { shell: '⚡', write: '✏️', url: '🌐', mcp: '🔌', read: '📖' };
-      const icon = icons[p.kind] ?? '🔐';
+      const icon = icons[kind] ?? '🔐';
       const title =
         p.kind === 'shell'
           ? 'Run command'
@@ -653,12 +671,32 @@ async function main(): Promise<void> {
         { text: t(c.showReactions) + ' Reactions', data: 'cfg:showReactions' },
       ],
       [{ text: '🤖 Change Model', data: 'cfg:modelPicker' }],
+      [{ text: '🔒 Tool Security', data: 'cfg:security' }],
     ];
     if (editId) {
       await client.editButtons(chatId, editId, text, buttons);
     } else {
       await client.sendButtons(chatId, text, buttons);
     }
+  }
+
+  async function sendSecurityMenu(chatId: string, editId: number) {
+    const c = cfg(chatId);
+    const t = (v: boolean) => (v ? '✅' : '⬜');
+    const kindLabels: Record<PermKind, string> = {
+      read: '📖 Read files',
+      write: '✏️ Write files',
+      shell: '⚡ Run commands',
+      url: '🌐 Fetch URLs',
+      mcp: '🔌 MCP tools',
+      'custom-tool': '🔧 Custom tools',
+    };
+    const buttons: { text: string; data: string }[][] = [];
+    for (const [kind, label] of Object.entries(kindLabels)) {
+      buttons.push([{ text: t(c.autoApprove[kind as PermKind]) + ' ' + label, data: 'sec:' + kind }]);
+    }
+    buttons.push([{ text: '← Back', data: 'cfg:back' }]);
+    await client.editButtons(chatId, editId, '🔒 *Tool Security*\nAuto-approve by type:', buttons);
   }
 
   async function sendModelPicker(chatId: string, editId: number) {
@@ -726,6 +764,7 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (data === 'cfg:security') return sendSecurityMenu(chatId, msgId);
     if (data === 'cfg:modelPicker') return sendModelPicker(chatId, msgId);
     if (data === 'cfg:back') return sendConfigMenu(chatId, msgId);
     if (data.startsWith('model:')) {
@@ -740,6 +779,13 @@ async function main(): Promise<void> {
           /* ignore */
         }
       return sendConfigMenu(chatId, msgId);
+    }
+    if (data.startsWith('sec:')) {
+      const kind = data.slice(4) as PermKind;
+      const c = cfg(chatId);
+      c.autoApprove[kind] = !c.autoApprove[kind];
+      setCfg(chatId, c);
+      return sendSecurityMenu(chatId, msgId);
     }
     if (data.startsWith('mode:')) {
       const newMode = data.slice(5) as 'interactive' | 'plan' | 'autopilot';
