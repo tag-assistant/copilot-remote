@@ -435,23 +435,9 @@ export class TelegramClient implements Client {
         const fs = await import('fs');
         buffer = fs.readFileSync(pathOrUrl);
       }
-      const boundary = '----CopilotRemote' + Date.now();
-      const body =
-        '--' +
-        boundary +
-        '\r\n' +
-        'Content-Disposition: form-data; name="photo"; filename="avatar.jpg"\r\n' +
-        'Content-Type: image/jpeg\r\n\r\n';
-      const end = '\r\n--' + boundary + '--\r\n';
-      const payload = Buffer.concat([Buffer.from(body), buffer, Buffer.from(end)]);
-      const resp = await fetch('https://api.telegram.org/bot' + this.config.botToken + '/setMyProfilePhoto', {
-        method: 'POST',
-        headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
-        body: payload,
-      });
-      if (!resp.ok) log.debug('setMyProfilePhoto failed:', await resp.text());
+      await this.bot.api.raw.setMyProfilePhoto({ photo: new InputFile(buffer, 'avatar.jpg') });
     } catch (e) {
-      log.debug('setMyProfilePhoto error:', e);
+      log.debug('setMyProfilePhoto failed:', e);
     }
   }
 
