@@ -54,12 +54,15 @@ export class CopilotSession extends EventEmitter {
   private _sessionId: string | null = null;
   private lineBuffer = '';
   private _allowAllTools = false;
+  private _model: string | null = null;
 
   get alive(): boolean { return this._alive; }
   get busy(): boolean { return this._busy; }
   get sessionId(): string | null { return this._sessionId; }
   get allowAllTools(): boolean { return this._allowAllTools; }
   set allowAllTools(v: boolean) { this._allowAllTools = v; }
+  get model(): string | null { return this._model; }
+  set model(v: string | null) { this._model = v; }
 
   async start(options: SessionOptions): Promise<void> {
     if (!fs.existsSync(options.cwd)) {
@@ -97,6 +100,10 @@ export class CopilotSession extends EventEmitter {
 
     if (this._allowAllTools) {
       parts.push('--allow-all-tools');
+    }
+
+    if (this._model) {
+      parts.push('--model ' + this._model);
     }
 
     const cmd = parts.join(' ');

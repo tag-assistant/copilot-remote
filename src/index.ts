@@ -78,13 +78,20 @@ async function main(): Promise<void> {
     showThinking: boolean;
     showTools: boolean;
     allowAllTools: boolean;
+    model: string;
   }
   const defaultConfig: ChatConfig = {
     showUsage: false,
     showThinking: true,
     showTools: true,
     allowAllTools: false,
+    model: 'claude-sonnet-4',
   };
+
+  const MODELS = [
+    'claude-sonnet-4', 'claude-sonnet-4.6', 'claude-opus-4.6',
+    'gemini-3-pro-preview', 'gpt-5.2', 'gpt-5.4',
+  ];
   const chatConfigs = new Map<string, ChatConfig>();
   const getConfig = (chatId: string): ChatConfig => {
     return chatConfigs.get(chatId) ?? { ...defaultConfig };
@@ -116,6 +123,7 @@ async function main(): Promise<void> {
       try {
         await session.start({ cwd: workDir, binary: copilotBin });
         session.allowAllTools = getConfig(chatId).allowAllTools;
+        session.model = getConfig(chatId).model;
         sessions.set(chatId, session);
       } catch (err) {
         await telegram.sendMessage(chatId, '❌ Failed to start: ' + String(err));
@@ -459,7 +467,7 @@ async function main(): Promise<void> {
   async function sendConfigMenu(chatId: string, editMsgId?: number): Promise<void> {
     const cfg = getConfig(chatId);
     const toggle = (v: boolean) => v ? '✅' : '⬜';
-    const text = '⚙️ *Settings*';
+    const text = '⚙️ *Settings*\nModel: `' + cfg.model + '`';
     const buttons = [
       [
         { text: toggle(cfg.showThinking) + ' Thinking', data: 'cfg:showThinking' },
@@ -469,6 +477,7 @@ async function main(): Promise<void> {
         { text: toggle(cfg.showUsage) + ' Usage Stats', data: 'cfg:showUsage' },
         { text: toggle(cfg.allowAllTools) + ' Auto-approve', data: 'cfg:allowAllTools' },
       ],
+      [{ text: '🤖 Change Model', data: 'cfg:modelPicker' }],
     ];
 
     if (editMsgId) {
@@ -478,22 +487,58 @@ async function main(): Promise<void> {
     }
   }
 
-  // Handle inline button presses
+  async function sendModelPicker(chatId: string, editMsgId: number): Promise<void> {
+    const cfg = getConfig(chatId);
+    const text = '🤖 *Select Model*';
+    // 2 per row
+    const buttons: { text: string; data: string }[][] = [];
+    for (let i = 0; i < MODELS.length; i += 2) {
+      const row = MODELS.slice(i, i + 2).map(m => ({
+        text: (m === cfg.model ? '● ' : '') + m,
+        data: 'model:' + m,
+      }));
+      buttons.push(row);
+    }
+    buttons.push([{ text: '← Back', data: 'cfg:back' }]);
+    await telegram.editMessageButtons(chatId, editMsgId, text, buttons);
+  }
+
   telegram.setCallbackHandler(async (callbackId: string, data: string, chatId: string, msgId: number) => {
+    if (data === 'cfg:modelPicker') {
+      await sendModelPicker(chatId, msgId);
+      return;
+    }
+
+    if (data === 'cfg:back') {
+      await sendConfigMenu(chatId, msgId);
+      return;
+    }
+
+    if (data.startsWith('model:')) {
+      const model = data.slice(6);
+      const cfg = getConfig(chatId);
+      cfg.model = model;
+      setConfig(chatId, cfg);
+      // Sync to active session
+      const session = sessions.get(chatId);
+      if (session?.alive) session.model = model;
+      // Go back to config menu
+      await sendConfigMenu(chatId, msgId);
+      return;
+    }
+
     if (data.startsWith('cfg:')) {
       const key = data.slice(4) as keyof ChatConfig;
       const cfg = getConfig(chatId);
-      if (key in cfg) {
+      if (key in cfg && typeof (cfg as any)[key] === 'boolean') {
         (cfg as any)[key] = !(cfg as any)[key];
         setConfig(chatId, cfg);
 
-        // Sync allowAllTools to active session
         if (key === 'allowAllTools') {
           const session = sessions.get(chatId);
           if (session?.alive) session.allowAllTools = cfg.allowAllTools;
         }
 
-        // Update the config menu in-place
         await sendConfigMenu(chatId, msgId);
       }
     }
