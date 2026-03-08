@@ -564,7 +564,7 @@ async function main(): Promise<void> {
         const topicName = argStr || 'Copilot Session';
         const threadId = await client.createForumTopic(rawChatId, topicName);
         if (!threadId) {
-          await client.sendMessage(chatId, '❌ Failed to create topic. Make sure the bot has forum topic permissions.');
+          await client.sendMessage(chatId, '❌ Failed to create topic.\n\nEnable topics in BotFather:\n@BotFather → /mybots → @copilot_remote_bot → Bot Settings → Topics in Private Chats → Enable');
           break;
         }
         const topicKey = rawChatId + ':' + threadId;

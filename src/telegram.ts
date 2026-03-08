@@ -2,6 +2,7 @@
 // Raw Telegram Bot API via fetch(). No grammy/telegraf.
 import { markdownToHtml, markdownToText } from './format.js';
 import { toTelegramReaction } from './emoji.js';
+import { log } from './log.js';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 
@@ -335,7 +336,8 @@ export class TelegramBridge {
     try {
       const res = await this.api('createForumTopic', { chat_id: chatId, name });
       return res.result?.message_thread_id ?? null;
-    } catch {
+    } catch (e: any) {
+      log.error('createForumTopic failed:', e?.message ?? e);
       return null;
     }
   }
