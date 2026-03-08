@@ -903,14 +903,13 @@ async function main(): Promise<void> {
           } catch { /* no workspace.yaml */ }
           const isCurrent = entry.sessionId === current;
           const label = (isCurrent ? '▶️ ' : '') + summary + ' · ' + ago(entry.lastUsed);
-          lines.push((isCurrent ? '▶️' : '⏸') + ' **' + summary + '** · ' + ago(entry.lastUsed));
           buttons.push([{
             text: label,
             data: '@' + chatId + '|session:' + entry.sessionId,
             ...(isCurrent ? { style: 'success' } : {}),
           }]);
         }
-        await client.sendButtons(chatId, '📋 *Sessions*\n' + lines.join('\n') + '\n\nTap to resume:', buttons);
+        await client.sendButtons(chatId, '📋 *Sessions*', buttons);
         break;
       }
       case '/status': {
