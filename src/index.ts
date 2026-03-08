@@ -253,6 +253,20 @@ async function main(): Promise<void> {
         break;
       }
 
+      case '/allowall': {
+        let session = sessions.get(chatId);
+        if (!session || !session.alive) {
+          session = new CopilotSession();
+          const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
+          await session.start({ cwd: workDir, binary: copilotBin });
+          sessions.set(chatId, session);
+        }
+        session.allowAllTools = !session.allowAllTools;
+        await telegram.sendMessage(chatId,
+          session.allowAllTools ? '✅ Auto-approve all tools ON' : '⚪ Auto-approve all tools OFF');
+        break;
+      }
+
       case '/help':
       default:
         await telegram.sendMessage(chatId, [

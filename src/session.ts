@@ -53,10 +53,13 @@ export class CopilotSession extends EventEmitter {
   private sessionEnv!: Record<string, string>;
   private _sessionId: string | null = null;
   private lineBuffer = '';
+  private _allowAllTools = false;
 
   get alive(): boolean { return this._alive; }
   get busy(): boolean { return this._busy; }
   get sessionId(): string | null { return this._sessionId; }
+  get allowAllTools(): boolean { return this._allowAllTools; }
+  set allowAllTools(v: boolean) { this._allowAllTools = v; }
 
   async start(options: SessionOptions): Promise<void> {
     if (!fs.existsSync(options.cwd)) {
@@ -90,6 +93,10 @@ export class CopilotSession extends EventEmitter {
     // Resume existing session for conversation continuity
     if (this._sessionId) {
       parts.push('--resume ' + this._sessionId);
+    }
+
+    if (this._allowAllTools) {
+      parts.push('--allow-all-tools');
     }
 
     const cmd = parts.join(' ');
