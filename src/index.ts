@@ -1107,6 +1107,13 @@ async function main(): Promise<void> {
   async function sendReasoningMenu(chatId: string, editId: number) {
     const c = cfg(chatId);
     const pfx = (d: string) => `@${chatId}|${d}`;
+    // Ensure models are cached
+    if (!cachedModels.length) {
+      const s = sessions.get(chatId);
+      if (s?.alive) {
+        try { cachedModels = await s.listModels(); } catch { /* ignore */ }
+      }
+    }
     // Find current model's supported reasoning efforts
     const modelInfo = cachedModels.find((m) => (m.id ?? m.name) === c.model);
     const supported: string[] = modelInfo?.supportedReasoningEfforts ?? [];
