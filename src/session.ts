@@ -171,11 +171,22 @@ export class Session extends EventEmitter {
       "When asked to do something, do it — don't just explain how.",
       'Show your work: mention files you read, commands you ran, changes you made.',
       'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
+      'You are running via copilot-remote, a Telegram bridge for GitHub Copilot CLI.',
+      'You have custom Telegram tools: send_notification, send_file, send_photo, send_location, send_voice, pin_message, create_topic, react, send_contact.',
+      'Use these tools when the user asks to send files, photos, locations, or when you want to push rich content back to the chat.',
       ...(opts.topicContext
-        ? ['This conversation topic is: "' + opts.topicContext + '". Stay focused on this subject.']
+        ? [`This conversation is in a Telegram forum topic: "${opts.topicContext}". Stay focused on this subject.`]
         : []),
     ];
     if (opts.systemInstructions) systemLines.push(opts.systemInstructions);
+    // Inject runtime config context
+    const configContext = [
+      `Working directory: ${this.cwd}`,
+      `Mode: ${opts.autopilot ? 'autopilot (auto-approve all actions)' : 'interactive (ask before acting)'}`,
+      ...(opts.model ? [`Model: ${opts.model}`] : []),
+      ...(opts.agent ? [`Agent: ${opts.agent}`] : []),
+    ];
+    systemLines.push('Current config: ' + configContext.join(', ') + '.');
 
     return {
       clientName: 'copilot-remote',
