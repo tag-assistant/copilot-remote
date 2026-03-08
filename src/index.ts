@@ -396,7 +396,18 @@ async function main(): Promise<void> {
           await client.sendMessage(chatId, '⚪ No session. Send a message to start.');
           break;
         }
-        const lines = ['✅ `' + workDir(chatId) + '`'];
+        const dir = workDir(chatId);
+        const lines: string[] = [];
+
+        // Git branch
+        try {
+          const { execSync } = await import('child_process');
+          const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, timeout: 3000 }).toString().trim();
+          lines.push('📂 `' + dir + '` [⎇ ' + branch + ']');
+        } catch {
+          lines.push('📂 `' + dir + '`');
+        }
+
         try {
           const [model, mode, agent] = await Promise.all([
             s.getCurrentModel().catch(() => null),
@@ -404,21 +415,30 @@ async function main(): Promise<void> {
             s.getCurrentAgent().catch(() => null),
           ]);
           if ((model as any)?.modelId) lines.push('🤖 `' + (model as any).modelId + '`');
-          if (mode) lines.push('⚙️ `' + mode + '`');
+          const modeIcons: Record<string, string> = { interactive: '⚡', plan: '📋', autopilot: '🚀' };
+          if (mode) lines.push((modeIcons[mode] ?? '⚙️') + ' ' + mode);
           if ((agent as any)?.agent?.name) lines.push('🎭 `' + (agent as any).agent.name + '`');
         } catch {
           /* ignore */
         }
+
         try {
           const q = await s.getQuota();
           const snap = (q as any)?.quotaSnapshots?.[0];
           if (snap)
             lines.push(
-              '📊 ' + snap.usedRequests + '/' + snap.entitlementRequests + ' (' + snap.remainingPercentage + '% left)',
+              '📊 ' +
+                snap.usedRequests +
+                '/' +
+                snap.entitlementRequests +
+                ' reqs (' +
+                snap.remainingPercentage +
+                '% left)',
             );
         } catch {
           /* ignore */
         }
+
         await client.sendMessage(chatId, lines.join('\n'));
         break;
       }
@@ -626,12 +646,33 @@ async function main(): Promise<void> {
           [
             '⚡ *Copilot Remote*',
             '',
-            '`/new` `/stop` `/cd` `/status`',
-            '`/plan` `/autopilot` `/fleet`',
-            '`/research` `/diff` `/review`',
-            '`/compact` `/context` `/usage`',
-            '`/tools` `/files` `/agent`',
-            '`/config` `/abort` `/yes` `/no`',
+            '*Session*',
+            '`/new` — Fresh session',
+            '`/stop` — Kill session',
+            '`/cd <dir>` — Change directory (restarts)',
+            '`/status` — Model, mode, cwd, quota',
+            '`/compact` — Compress context',
+            '',
+            '*Modes*',
+            '`/plan [task]` — Plan mode (toggle or plan)',
+            '`/fleet [task]` — Parallel sub-agents',
+            '',
+            '*Coding*',
+            '`/research <topic>` — Deep research',
+            '`/diff` — Uncommitted changes',
+            '`/review` — Code review',
+            '`/init` — Generate copilot-instructions.md',
+            '',
+            '*Tools*',
+            '`/agent [name]` — Switch agent',
+            '`/tools` — List available tools',
+            '`/files` — Browse workspace',
+            '`/usage` — Quota info',
+            '',
+            '*Other*',
+            '`/config` — Settings (model, mode, security, display)',
+            '`/abort` — Cancel current request',
+            '`/yes` `/no` — Approve/deny permission',
           ].join('\n'),
         );
         break;
