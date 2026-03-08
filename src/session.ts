@@ -67,6 +67,17 @@ export class Session extends EventEmitter {
       clientName: 'copilot-remote',
       streaming: true,
       workingDirectory: this.cwd,
+      systemMessage: {
+        mode: 'append',
+        content: [
+          'You are being accessed via a Telegram bot bridge called copilot-remote.',
+          'The user is chatting with you from their phone. Keep responses concise but complete.',
+          'You have full access to the filesystem, shell, and all tools. Use them proactively.',
+          'When asked to do something, do it — don\'t just explain how.',
+          'Show your work: mention files you read, commands you ran, changes you made.',
+          'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
+        ].join('\n'),
+      },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
     };
     if (opts.model) config.model = opts.model;
