@@ -18,6 +18,7 @@ import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
 import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig, type PermKind, type GlobalConfig } from './config-store.js';
+import { markdownToTelegramHtml } from './format/telegram.js';
 import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -377,7 +378,7 @@ async function main(): Promise<void> {
     const toolLines: string[] = [];
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
-    const THROTTLE = useDraft ? 400 : 1200; // drafts can update faster
+    const THROTTLE = useDraft ? 400 : 800; // drafts can update faster, edits throttled to avoid rate limits
 
     const display = () => {
       const p: string[] = [];
