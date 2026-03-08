@@ -68,6 +68,7 @@ function renderTelegramHtml(ir: MarkdownIR): string {
 }
 
 // --- File reference wrapping ---
+// Ported from OpenClaw (MIT) — file reference wrapping
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
