@@ -519,7 +519,6 @@ async function main(): Promise<void> {
   async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
     let session: Session;
     try {
-      const t0 = Date.now();
       session = await getSession(chatId);
     } catch (err: unknown) {
       const msg = (err as Error)?.message ?? String(err);

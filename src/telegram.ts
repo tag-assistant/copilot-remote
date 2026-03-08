@@ -519,14 +519,14 @@ export class TelegramClient implements Client {
     text: string,
   ): Promise<{ message_id?: number } | null> {
     try {
-      return await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)[method]({ ...params, text: markdownToHtml(text) });
+      return await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)[method]({ ...params, text: markdownToHtml(text) }) as { message_id?: number } | null;
     } catch {
       try {
         return await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)[method]({
           ...params,
           text: markdownToText(text),
           parse_mode: undefined,
-        });
+        }) as { message_id?: number } | null;
       } catch {
         return null;
       }
