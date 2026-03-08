@@ -151,16 +151,24 @@ async function main(): Promise<void> {
       scheduleEdit();
     };
 
+    const prettyTool: Record<string, string> = {
+      read_file: 'Read', edit_file: 'Edit', create_file: 'Create',
+      bash: 'Run', report_intent: 'Plan', view: 'View',
+      list_dir: 'List', search: 'Search', grep_search: 'Search',
+      think: 'Think', glob: 'Glob', delete_file: 'Delete',
+    };
+
     const onToolStart = async (tool: any) => {
       const name = tool.toolName;
+      const label = prettyTool[name] ?? name.replace(/_/g, ' ');
       const args = tool.arguments;
       let detail = '';
       if (name === 'bash' && args?.command) {
         detail = ': ' + args.command;
-      } else if ((name === 'edit_file' || name === 'read_file') && args?.file_path) {
+      } else if (args?.file_path) {
         detail = ': ' + args.file_path;
       }
-      streamText += '\n⚙ ' + name + detail;
+      streamText += '\n⚙ ' + label + detail;
       scheduleEdit();
     };
 
