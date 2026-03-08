@@ -948,8 +948,13 @@ async function main(): Promise<void> {
       plan: 'success',
       autopilot: 'danger',
     };
+    const MODE_BTN_LABELS: Record<string, string> = {
+      interactive: '⚡ Ask',
+      plan: '📋 Plan',
+      autopilot: '🚀 Auto',
+    };
     const modeBtn = (m: string) => ({
-      text: MODE_LABELS[m] ?? m,
+      text: MODE_BTN_LABELS[m] ?? m,
       data: pfx('mode:' + m),
       ...(m === mode ? { style: MODE_STYLES[m] } : {}),
     });
