@@ -11,6 +11,7 @@ import {
 } from '@github/copilot-sdk';
 import { EventEmitter } from 'events';
 import { log } from './log.js';
+import { createTelegramTools } from './tools.js';
 
 export interface SessionOptions {
   cwd: string;
@@ -72,6 +73,12 @@ export class Session extends EventEmitter {
       },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
       onUserInputRequest: (req: any) => this.handleUserInput(req),
+      infiniteSessions: { enabled: true, backgroundCompactionThreshold: 0.8, bufferExhaustionThreshold: 0.95 },
+      tools: createTelegramTools({
+        sendNotification: async (text: string) => {
+          this.emit('notification', text);
+        },
+      }),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort as any } : {}),
     };

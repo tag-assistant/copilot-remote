@@ -349,6 +349,9 @@ async function main(): Promise<void> {
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
     session.on('user_input_request', onUserInput);
+    session.on('notification', async (text: string) => {
+      await client.sendMessage(chatId, '🔔 ' + text);
+    });
 
     const cleanup = () => {
       if (timer) {
