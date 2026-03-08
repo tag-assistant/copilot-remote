@@ -166,15 +166,15 @@ export class TelegramClient implements Client {
     // Register bot command menu
     await this.bot.api
       .setMyCommands([
-        { command: 'new', description: 'Fresh session' },
-        { command: 'stop', description: 'Kill session' },
+        { command: 'new', description: 'New session' },
+        { command: 'config', description: 'Settings & preferences' },
+        { command: 'status', description: 'Session status' },
+        { command: 'abort', description: 'Cancel current operation' },
         { command: 'cd', description: 'Change working directory' },
-        { command: 'status', description: 'Model, mode, cwd, quota' },
-        { command: 'config', description: 'Settings menu' },
-        { command: 'plan', description: 'Plan mode' },
         { command: 'agent', description: 'Switch agent' },
-        { command: 'compact', description: 'Compress context' },
-        { command: 'help', description: 'All commands' },
+        { command: 'tools', description: 'Manage tools' },
+        { command: 'usage', description: 'Usage statistics' },
+        { command: 'help', description: 'Show commands' },
       ])
       .catch(() => {});
 
