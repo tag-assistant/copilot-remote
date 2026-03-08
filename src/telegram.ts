@@ -1,6 +1,7 @@
 // Copilot Remote — Telegram Client (grammY)
 import { Bot, type Context } from 'grammy';
-import { run, type RunnerHandle } from '@grammyjs/runner';
+import { run, sequentialize, type RunnerHandle } from '@grammyjs/runner';
+import { apiThrottler } from '@grammyjs/transformer-throttler';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { hydrate, type HydrateFlavor } from '@grammyjs/hydrate';
 import { hydrateFiles, type FileFlavor } from '@grammyjs/files';
@@ -41,6 +42,8 @@ export class TelegramClient implements Client {
     this.bot = new Bot<MyContext>(config.botToken);
 
     // ── Plugins ──
+    this.bot.use(sequentialize((ctx) => String(ctx.chatId ?? '')));
+    this.bot.api.config.use(apiThrottler());
     this.bot.api.config.use(autoRetry());
     const defaultParseMode: Transformer = (prev, method, payload, signal) => {
       if (!('parse_mode' in payload)) {
