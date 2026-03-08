@@ -1,5 +1,5 @@
 // Copilot Remote — Telegram Client (grammY)
-import { Bot, type Context } from 'grammy';
+import { Bot, type Context, InputFile } from 'grammy';
 import { run, type RunnerHandle } from '@grammyjs/runner';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { hydrate, type HydrateFlavor } from '@grammyjs/hydrate';
@@ -376,9 +376,13 @@ export class TelegramClient implements Client {
     }
   }
 
-  async sendPhoto(chatId: string, url: string, caption?: string): Promise<number | null> {
+  async sendPhoto(chatId: string, fileOrUrl: string, caption?: string, threadId?: number): Promise<number | null> {
     try {
-      const res = await this.bot.api.sendPhoto(chatId, url, { ...(caption ? { caption } : {}) });
+      const source = fileOrUrl.startsWith('/') ? new InputFile(fileOrUrl) : fileOrUrl;
+      const res = await this.bot.api.sendPhoto(chatId, source, {
+        ...(caption ? { caption } : {}),
+        ...(threadId ? { message_thread_id: threadId } : {}),
+      });
       return res.message_id;
     } catch {
       return null;
