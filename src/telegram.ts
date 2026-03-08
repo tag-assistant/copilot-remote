@@ -294,8 +294,21 @@ export class TelegramClient implements Client {
   }
 
   async editMessage(chatId: string, msgId: number, text: string): Promise<void> {
-    const truncated = text.slice(0, MAX_MESSAGE_LENGTH);
-    await this.sendText('editMessageText', { chat_id: chatId, message_id: msgId }, truncated);
+    // Render to HTML first, then check length. If too long, truncate at IR level.
+    const chunks = markdownToTelegramChunks(text, MAX_MESSAGE_LENGTH);
+    const chunk = chunks[0]; // edit can only update one message — use first chunk
+    if (!chunk) return;
+    try {
+      await (this.bot.api.raw as Record<string, Function>)['editMessageText']({
+        chat_id: chatId, message_id: msgId, text: chunk.html, parse_mode: 'HTML',
+      });
+    } catch {
+      try {
+        await (this.bot.api.raw as Record<string, Function>)['editMessageText']({
+          chat_id: chatId, message_id: msgId, text: chunk.text, parse_mode: undefined,
+        });
+      } catch { /* ignore edit failures during streaming */ }
+    }
   }
 
   async sendButtons(chatId: string, text: string, buttons: Button[][], threadId?: number): Promise<number | null> {

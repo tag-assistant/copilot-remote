@@ -706,15 +706,14 @@ async function main(): Promise<void> {
       for (const id of staleMessageIds) {
         client.deleteMessage?.(chatId, id).catch(() => {});
       }
-      // Always clean up streaming message if we're sending a new one
-      if (draftId && useDraft) {
-        // Draft mode: draft auto-disappears, send real message
-        if (streamMsgId) await client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
-        await client.sendMessage(chatId, final, { disableLinkPreview: true });
-      } else if (streamMsgId && final.length <= 4096) {
+      // Materialize: convert streaming message into final response in-place when possible.
+      // This avoids the visible delete+send flash that breaks reading flow.
+      const chunks = final ? (await import('./format.js')).markdownToTelegramChunks(final, 4096) : [];
+      if (streamMsgId && chunks.length <= 1) {
+        // Single chunk — edit the existing stream message in-place (materialize)
         await client.editMessage(chatId, streamMsgId, final);
       } else if (streamMsgId) {
-        // Response too long for single edit — delete stream msg, send fresh
+        // Multi-chunk — must delete stream msg and send fresh (can't edit into multiple messages)
         await client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
       } else {
