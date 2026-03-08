@@ -884,6 +884,9 @@ async function main(): Promise<void> {
         const dir = workDir(chatId);
         const lines: string[] = [];
 
+        // Session ID
+        if (s.sessionId) lines.push('🆔 `' + s.sessionId + '`');
+
         // Git branch
         try {
           const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, timeout: 3000 }).toString().trim();
