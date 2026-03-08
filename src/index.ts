@@ -1609,6 +1609,17 @@ async function main(): Promise<void> {
     }
     // Delegate config-related callbacks to config-menu module
     if (await handleConfigCallback(data, chatId, msgId, callbackId, configMenuDeps)) return;
+
+    // Handle user input responses (from ask_user tool)
+    if (data.startsWith('input:')) {
+      const answer = data.slice('input:'.length);
+      const s = sessions.get(chatId);
+      if (s?.alive) {
+        s.answerInput(answer);
+        await client.editButtons(chatId, msgId, '✅ ' + answer, []);
+      }
+      return;
+    }
   };
 
   // ── Shutdown ──
