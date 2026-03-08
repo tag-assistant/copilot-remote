@@ -129,6 +129,39 @@ export interface CopilotMessage {
 }
 
 export class Session extends EventEmitter {
+  // Shared CopilotClient — one CLI process for all sessions
+  private static sharedClient: CopilotClient | null = null;
+  private static sharedClientStarting: Promise<void> | null = null;
+  private static clientRefCount = 0;
+
+  private static async getSharedClient(opts?: { binary?: string; githubToken?: string }): Promise<CopilotClient> {
+    if (Session.sharedClient) {
+      Session.clientRefCount++;
+      return Session.sharedClient;
+    }
+    if (Session.sharedClientStarting) {
+      await Session.sharedClientStarting;
+      Session.clientRefCount++;
+      return Session.sharedClient!;
+    }
+    const clientOpts: CopilotClientOptions = { useStdio: true };
+    if (opts?.binary) clientOpts.cliPath = opts.binary;
+    if (opts?.githubToken) clientOpts.githubToken = opts.githubToken;
+    const client = new CopilotClient(clientOpts);
+    Session.sharedClientStarting = client.start().then(() => {
+      Session.sharedClient = client;
+      Session.sharedClientStarting = null;
+    });
+    await Session.sharedClientStarting;
+    Session.clientRefCount++;
+    return client;
+  }
+
+  private static releaseClient() {
+    Session.clientRefCount--;
+    // Don't stop — keep the process alive for future sessions
+  }
+
   private client: CopilotClient | null = null;
   private session: SDKSession | null = null;
   private _alive = false;
@@ -270,12 +303,7 @@ export class Session extends EventEmitter {
     this._autopilot = opts.autopilot ?? false;
     this._messageMode = opts.messageMode;
 
-    const clientOpts: CopilotClientOptions = { useStdio: true };
-    if (opts.binary) clientOpts.cliPath = opts.binary;
-    if (opts.githubToken) clientOpts.githubToken = opts.githubToken;
-
-    this.client = new CopilotClient(clientOpts);
-    await this.client.start();
+    this.client = await Session.getSharedClient({ binary: opts.binary, githubToken: opts.githubToken });
 
     this.session = await this.client.createSession(this.buildConfig(opts) as SessionConfig);
     this._alive = true;
@@ -605,11 +633,7 @@ export class Session extends EventEmitter {
     this._messageMode = opts.messageMode;
 
     if (!this.client) {
-      const clientOpts: CopilotClientOptions = { useStdio: true };
-      if (opts.binary) clientOpts.cliPath = opts.binary;
-      if (opts.githubToken) clientOpts.githubToken = opts.githubToken;
-      this.client = new CopilotClient(clientOpts);
-      await this.client.start();
+      this.client = await Session.getSharedClient({ binary: opts.binary, githubToken: opts.githubToken });
     }
 
     this.session = await this.client.resumeSession(sessionId, this.buildConfig(opts) as SessionConfig);
@@ -639,11 +663,7 @@ export class Session extends EventEmitter {
     } catch {
       /* ignore */
     }
-    try {
-      await this.client?.stop();
-    } catch {
-      /* ignore */
-    }
+    Session.releaseClient();
     this.session = null;
     this.client = null;
   }
