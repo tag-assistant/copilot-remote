@@ -122,8 +122,9 @@ export class TelegramClient implements Client {
       const chatId = String(ctx.callbackQuery.message?.chat?.id ?? '');
       const msg = ctx.callbackQuery.message;
       const msgId = msg?.message_id ?? 0;
+      // msg.date > 0 means it's a full Message (not InaccessibleMessage), which has message_thread_id
       const threadId =
-        ((msg as unknown as Record<string, unknown>)?.message_thread_id as number | undefined) ??
+        (msg && msg.date > 0 ? (msg as unknown as { message_thread_id?: number }).message_thread_id : undefined) ??
         this.msgThreadMap.get(msgId);
       log.debug(`Callback: chat=${chatId} threadId=${threadId} data=${ctx.callbackQuery.data}`);
       if (!chatId) {
