@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     autopilot: false,
     model: 'claude-sonnet-4',
     agent: null,
-    reasoningEffort: 'medium',
+    reasoningEffort: 'none',
     autoApprove: {
       read: true, // reading files is safe
       shell: false,
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
       binary: bin,
       model: c.model,
       autopilot: c.autopilot,
-      reasoningEffort: c.reasoningEffort as any,
+      reasoningEffort: c.reasoningEffort !== 'none' ? (c.reasoningEffort as any) : undefined,
       agent: c.agent ?? undefined,
     };
 
@@ -196,7 +196,27 @@ async function main(): Promise<void> {
 
   // ── Prompt handler (streaming + reactions) ──
   async function handlePrompt(chatId: string, msgId: number, prompt: string): Promise<void> {
-    const session = await getSession(chatId);
+    let session: Session;
+    try {
+      session = await getSession(chatId);
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      // If reasoning effort not supported, retry without it
+      if (msg.includes('reasoning effort')) {
+        const c = cfg(chatId);
+        c.reasoningEffort = 'none';
+        setCfg(chatId, c);
+        try {
+          session = await getSession(chatId);
+        } catch (err2: any) {
+          await client.sendMessage(chatId, '❌ Session failed: ' + (err2?.message ?? String(err2)));
+          return;
+        }
+      } else {
+        await client.sendMessage(chatId, '❌ Session failed: ' + msg);
+        return;
+      }
+    }
     const c = cfg(chatId);
     const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
     await react('🤔');
@@ -847,13 +867,24 @@ async function main(): Promise<void> {
 
   async function sendReasoningMenu(chatId: string, editId: number) {
     const c = cfg(chatId);
-    const levels = ['low', 'medium', 'high', 'xhigh'];
-    const labels: Record<string, string> = { low: '🐇 Low', medium: '⚖️ Medium', high: '🧠 High', xhigh: '🔥 XHigh' };
+    const levels = ['none', 'low', 'medium', 'high', 'xhigh'];
+    const labels: Record<string, string> = {
+      none: '⚪ Off',
+      low: '🐇 Low',
+      medium: '⚖️ Medium',
+      high: '🧠 High',
+      xhigh: '🔥 XHigh',
+    };
     const buttons = levels.map((l) => [
       { text: (l === c.reasoningEffort ? '● ' : '') + labels[l], data: 'reason:' + l },
     ]);
     buttons.push([{ text: '← Back', data: 'cfg:back' }]);
-    await client.editButtons(chatId, editId, '🧠 *Reasoning Effort*\nHigher = smarter but slower/costlier:', buttons);
+    await client.editButtons(
+      chatId,
+      editId,
+      '🧠 *Reasoning Effort*\nHigher = smarter but slower/costlier\n⚠️ Not all models support this:',
+      buttons,
+    );
   }
 
   async function sendDisplayMenu(chatId: string, editId: number) {
