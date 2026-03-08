@@ -321,11 +321,6 @@ export class Session extends EventEmitter {
     return this.session.rpc.compaction.compact();
   }
 
-  async readPlan(): Promise<any> {
-    if (!this.session) throw new Error('No session');
-    return this.session.rpc.plan.read();
-  }
-
   async listAgents(): Promise<any> {
     if (!this.session) throw new Error('No session');
     return this.session.rpc.agent.list();
@@ -349,6 +344,59 @@ export class Session extends EventEmitter {
   async getQuota(): Promise<any> {
     if (!this.client) throw new Error('No client');
     return (this.client as any).rpc.account.getQuota();
+  }
+
+  async getCurrentModel(): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.model.getCurrent();
+  }
+
+  async getCurrentAgent(): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.agent.getCurrent();
+  }
+
+  // ── Plan management ──
+
+  async readPlan(): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.plan.read();
+  }
+
+  async updatePlan(content: string): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.plan.update({ content });
+  }
+
+  async deletePlan(): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.plan.delete();
+  }
+
+  // ── Workspace ──
+
+  async listWorkspaceFiles(): Promise<string[]> {
+    if (!this.session) throw new Error('No session');
+    const result = await this.session.rpc.workspace.listFiles();
+    return (result as any)?.files ?? [];
+  }
+
+  async readWorkspaceFile(path: string): Promise<string> {
+    if (!this.session) throw new Error('No session');
+    const result = await this.session.rpc.workspace.readFile({ path });
+    return (result as any)?.content ?? '';
+  }
+
+  async createWorkspaceFile(path: string, content: string): Promise<any> {
+    if (!this.session) throw new Error('No session');
+    return this.session.rpc.workspace.createFile({ path, content });
+  }
+
+  // ── Health ──
+
+  async ping(): Promise<any> {
+    if (!this.client) throw new Error('No client');
+    return this.client.ping('health');
   }
 
   async getSessionMessages(): Promise<any[]> {

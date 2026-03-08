@@ -454,11 +454,34 @@ async function main(): Promise<void> {
       case '/status': {
         const session = sessions.get(chatId);
         const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
-        const lines = [];
+        const lines: string[] = [];
         if (session?.alive) {
           lines.push('✅ Active in `' + workDir + '`');
-          if (session.currentSessionId) lines.push('🆔 Session: `' + session.currentSessionId.slice(0, 8) + '...`');
+          if (session.currentSessionId) lines.push('🆔 `' + session.currentSessionId.slice(0, 8) + '...`');
+          
+          // Get real model + mode + agent from SDK
+          try {
+            const [model, mode, agent] = await Promise.all([
+              session.getCurrentModel().catch(() => null),
+              session.getMode().catch(() => null),
+              session.getCurrentAgent().catch(() => null),
+            ]);
+            if (model?.modelId) lines.push('🤖 Model: `' + model.modelId + '`');
+            if (mode) lines.push('⚙️ Mode: `' + mode + '`');
+            if (agent?.agent?.name) lines.push('🎭 Agent: `' + agent.agent.name + '`');
+          } catch {}
+
           if (session.busy) lines.push('⏳ Processing...');
+
+          // Quota
+          try {
+            const quota = await session.getQuota();
+            const snapshots = (quota as any)?.quotaSnapshots;
+            if (Array.isArray(snapshots) && snapshots.length > 0) {
+              const q = snapshots[0];
+              lines.push('📊 Quota: ' + q.usedRequests + '/' + q.entitlementRequests + ' (' + q.remainingPercentage + '% left)');
+            }
+          } catch {}
         } else {
           lines.push('⚪ No active session. Send a message to auto-start.');
         }
@@ -551,18 +574,63 @@ async function main(): Promise<void> {
         const session = sessions.get(chatId);
         if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
         try {
-          if (args.length > 0) {
-            // Plan with a task — switch to plan mode then send the task
+          if (args[0] === 'show' || args[0] === 'read') {
+            const plan = await session.readPlan();
+            if (plan?.exists && plan?.content) {
+              await telegram.sendMessage(chatId, '📋 *Current Plan*\n\n' + plan.content.slice(0, 3800));
+            } else {
+              await telegram.sendMessage(chatId, '📋 No plan exists. Use `/plan <task>` to create one.');
+            }
+          } else if (args[0] === 'delete' || args[0] === 'clear') {
+            await session.deletePlan();
+            await telegram.sendMessage(chatId, '🗑 Plan deleted.');
+          } else if (args.length > 0) {
             await session.setMode('plan');
             await telegram.sendMessage(chatId, '📋 Plan mode ON');
             await handlePrompt(chatId, messageId, args.join(' '));
           } else {
-            // Toggle plan mode
             const current = await session.getMode();
             const next = current === 'plan' ? 'interactive' : 'plan';
             await session.setMode(next);
             await telegram.sendMessage(chatId, next === 'plan' ? '📋 Plan mode ON' : '⚡ Interactive mode');
           }
+        } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
+        break;
+      }
+
+      case '/files': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        try {
+          if (args[0] === 'read' && args[1]) {
+            const content = await session.readWorkspaceFile(args[1]);
+            const display = content.length > 3800 ? content.slice(0, 3800) + '\n...(truncated)' : content;
+            await telegram.sendMessage(chatId, '📄 `' + args[1] + '`\n```\n' + display + '\n```');
+          } else {
+            const files = await session.listWorkspaceFiles();
+            if (files.length > 0) {
+              const lines = ['📂 *Workspace Files* (' + files.length + ')'];
+              for (const f of files.slice(0, 40)) {
+                lines.push('• `' + f + '`');
+              }
+              if (files.length > 40) lines.push('... and ' + (files.length - 40) + ' more');
+              await telegram.sendMessage(chatId, lines.join('\n'));
+            } else {
+              await telegram.sendMessage(chatId, '📂 No workspace files.');
+            }
+          }
+        } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
+        break;
+      }
+
+      case '/autopilot': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        try {
+          const current = await session.getMode();
+          const next = current === 'autopilot' ? 'interactive' : 'autopilot';
+          await session.setMode(next);
+          await telegram.sendMessage(chatId, next === 'autopilot' ? '🤖 Autopilot ON — Copilot will act without asking' : '⚡ Interactive mode');
         } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
         break;
       }
@@ -606,8 +674,15 @@ async function main(): Promise<void> {
         if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
         try {
           const messages = await session.getSessionMessages();
-          const count = messages.length;
-          await telegram.sendMessage(chatId, '📊 Context: ' + count + ' events in session');
+          const types: Record<string, number> = {};
+          for (const m of messages) {
+            types[m.type] = (types[m.type] ?? 0) + 1;
+          }
+          const lines = ['📊 *Context* (' + messages.length + ' events)'];
+          for (const [type, count] of Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+            lines.push('  `' + type + '`: ' + count);
+          }
+          await telegram.sendMessage(chatId, lines.join('\n'));
         } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
         break;
       }
@@ -617,11 +692,37 @@ async function main(): Promise<void> {
         if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
         try {
           const quota = await session.getQuota();
+          const snapshots = (quota as any)?.quotaSnapshots;
           const lines = ['📊 *Usage*'];
-          if (quota?.premiumRequests != null) lines.push('Premium requests: ' + quota.premiumRequests);
-          if (quota?.remainingQuota != null) lines.push('Remaining quota: ' + quota.remainingQuota);
-          if (quota?.resetAt) lines.push('Resets: ' + new Date(quota.resetAt).toLocaleDateString());
-          await telegram.sendMessage(chatId, lines.length > 1 ? lines.join('\n') : '📊 ' + JSON.stringify(quota));
+          if (Array.isArray(snapshots)) {
+            for (const q of snapshots) {
+              lines.push('• ' + (q.usedRequests ?? 0) + '/' + (q.entitlementRequests ?? '∞') + ' requests (' + (q.remainingPercentage ?? '?') + '% left)');
+              if (q.overage) lines.push('  ⚠️ Overage: ' + q.overage);
+            }
+          } else {
+            lines.push(JSON.stringify(quota).slice(0, 300));
+          }
+          await telegram.sendMessage(chatId, lines.join('\n'));
+        } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
+        break;
+      }
+
+      case '/tools': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        try {
+          const result = await session.listTools();
+          const tools = (result as any)?.tools ?? result;
+          if (Array.isArray(tools) && tools.length > 0) {
+            const lines = ['🔧 *Available Tools* (' + tools.length + ')'];
+            for (const t of tools.slice(0, 30)) {
+              lines.push('• `' + (t.name ?? t) + '`' + (t.description ? ' — ' + t.description.slice(0, 60) : ''));
+            }
+            if (tools.length > 30) lines.push('... and ' + (tools.length - 30) + ' more');
+            await telegram.sendMessage(chatId, lines.join('\n'));
+          } else {
+            await telegram.sendMessage(chatId, '🔧 No tools available');
+          }
         } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
         break;
       }
@@ -697,41 +798,44 @@ async function main(): Promise<void> {
       case '/help':
       default:
         await telegram.sendMessage(chatId, [
-          '⚡ *Copilot Remote v0.5.0*',
+          '⚡ *Copilot Remote v0.5*',
           '',
           '*Session*',
-          '`/new` `/clear` — Fresh session',
+          '`/new` — Fresh session',
           '`/stop` — Kill session',
-          '`/cd [dir]` — Change working directory',
-          '`/status` — Session info',
-          '`/resume [id]` — Switch session',
+          '`/cd [dir]` — Change directory',
+          '`/status` — Model, mode, quota',
+          '',
+          '*Modes*',
+          '`/plan [task|show|delete]` — Plan mode',
+          '`/autopilot` — Toggle autopilot',
+          '`/fleet [task]` — Parallel subagents',
           '',
           '*Coding*',
-          '`/plan [task]` — Plan before coding',
           '`/diff` — Review changes',
-          '`/review` — Code review agent',
-          '`/fleet` — Parallel subagents',
-          '`/tasks` — View background tasks',
-          '',
-          '*Research & Context*',
+          '`/review` — Code review',
           '`/research [topic]` — Deep research',
-          '`/context` — Token usage',
-          '`/usage` — Session metrics',
-          '`/compact` — Compress context',
-          '`/share` — Export to markdown/gist',
+          '`/tasks` — Background tasks',
           '',
-          '*Tools & Permissions*',
-          '`/yes` `/no` — Approve/deny action',
+          '*Context*',
+          '`/context` — Event breakdown',
+          '`/usage` — Quota + requests',
+          '`/compact` — Compress context',
+          '`/tools` — Available tools',
+          '`/files [read path]` — Workspace files',
+          '',
+          '*Permissions*',
+          '`/yes` `/no` — Approve/deny',
           '`/abort` — Cancel request',
-          '`/allowall` — Toggle auto-approve',
           '',
           '*Customization*',
           '`/config` — Settings',
           '`/agent [name]` — Custom agent',
-          '`/init` — Setup copilot-instructions',
+          '`/init` — Setup instructions',
           '`/instructions` — View instructions',
           '`/skills` — Manage skills',
-          '`/mcp` — Manage MCP servers',
+          '`/mcp` — MCP servers',
+          '`/share` — Export session',
         ].join('\n'));
         break;
     }
