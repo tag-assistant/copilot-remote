@@ -455,7 +455,8 @@ async function main(): Promise<void> {
 
   // ── Command handler ──
   async function handleCommand(text: string, chatId: string, msgId: number): Promise<void> {
-    const [cmd, ...args] = text.split(' ');
+    const [rawCmd, ...args] = text.split(' ');
+    const cmd = rawCmd.replace(/@\w+$/, ''); // strip @botname suffix
     const argStr = args.join(' ');
 
     // Passthrough prompt commands
