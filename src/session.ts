@@ -277,13 +277,25 @@ export class Session extends EventEmitter {
       case 'tool.execution_start':
         this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments });
         break;
-      case 'tool.execution_complete':
+      case 'tool.execution_complete': {
+        const result = d.result as any;
+        // Check for image content blocks in the result
+        const imageBlocks: string[] = [];
+        if (result?.content && Array.isArray(result.content)) {
+          for (const block of result.content) {
+            if (block.type === 'image' && block.data) {
+              imageBlocks.push(block.data); // base64 string
+            }
+          }
+        }
         this.emit('tool_complete', {
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
           detailedContent: (d.result as any)?.detailedContent ?? (d.result as any)?.content,
+          images: imageBlocks.length ? imageBlocks : undefined,
         });
         break;
+      }
       case 'permission.requested':
         this.emit('permission_request', d);
         break;
