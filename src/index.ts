@@ -94,7 +94,55 @@ async function main(): Promise<void> {
   const configs = new Map<string, ChatConfig>();
   const pendingPerms = new Map<number, string>();
   const sessionStore = new SessionStore();
+  const threadMap = new Map<string, number>(); // sessionKey → threadId
   let cachedModels: string[] = [];
+
+  // Session key: "chatId" or "chatId:threadId" for forum topics
+  const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
+
+  // Wrap client methods to auto-resolve session keys (chatId:threadId → chatId + threadId param)
+  const origSendMessage = client.sendMessage.bind(client);
+  const origSendButtons = client.sendButtons.bind(client);
+  const origEditMessage = client.editMessage.bind(client);
+  const origEditButtons = client.editButtons.bind(client);
+  const origSendTyping = client.sendTyping.bind(client);
+  const origSetReaction = client.setReaction.bind(client);
+  const origRemoveReaction = client.removeReaction.bind(client);
+
+  const resolveKey = (key: string): [string, number | undefined] => {
+    const tid = threadMap.get(key);
+    const cid = key.includes(':') ? key.split(':')[0] : key;
+    return [cid, tid];
+  };
+
+  client.sendMessage = (key: string, text: string, opts?: any) => {
+    const [cid, tid] = resolveKey(key);
+    return origSendMessage(cid, text, { ...opts, threadId: tid });
+  };
+  client.sendButtons = (key: string, text: string, buttons: any) => {
+    const [cid] = resolveKey(key);
+    return origSendButtons(cid, text, buttons);
+  };
+  client.editMessage = (key: string, msgId: number, text: string) => {
+    const [cid] = resolveKey(key);
+    return origEditMessage(cid, msgId, text);
+  };
+  client.editButtons = (key: string, msgId: number, text: string, buttons: any) => {
+    const [cid] = resolveKey(key);
+    return origEditButtons(cid, msgId, text, buttons);
+  };
+  client.sendTyping = (key: string) => {
+    const [cid] = resolveKey(key);
+    return origSendTyping(cid);
+  };
+  client.setReaction = (key: string, msgId: number, emoji: string) => {
+    const [cid] = resolveKey(key);
+    return origSetReaction(cid, msgId, emoji);
+  };
+  client.removeReaction = (key: string, msgId: number) => {
+    const [cid] = resolveKey(key);
+    return origRemoveReaction(cid, msgId);
+  };
 
   const cfg = (id: string) => configs.get(id) ?? { ...defaultCfg };
   const setCfg = (id: string, c: ChatConfig) => configs.set(id, c);
@@ -353,11 +401,14 @@ async function main(): Promise<void> {
   }
 
   // ── Message handler ──
-  client.onMessage = async (text, chatId, messageId, replyText, replyToMsgId) => {
+  client.onMessage = async (text, chatId, messageId, replyText, replyToMsgId, threadId) => {
+    const key = sessionKey(chatId, threadId);
+    if (threadId) threadMap.set(key, threadId);
+
     // Reply to permission message
     if (replyToMsgId && pendingPerms.has(replyToMsgId)) {
       const lower = text.toLowerCase().trim();
-      const s = sessions.get(chatId);
+      const s = sessions.get(key);
       if (s?.alive) {
         if (['yes', 'y', 'approve', '👍'].includes(lower)) {
           s.approve();
@@ -371,14 +422,17 @@ async function main(): Promise<void> {
           await client.editButtons(chatId, replyToMsgId, '❌ Denied', []);
           return;
         }
+        // Check if it's an answer to a user input question
+        s.answerInput(text);
+        return;
       }
     }
 
-    if (text.startsWith('/')) return handleCommand(text, chatId, messageId);
+    if (text.startsWith('/')) return handleCommand(text, key, messageId);
 
     let prompt = text;
     if (replyText) prompt = 'Context (replying to):\n"""\n' + replyText + '\n"""\n\nMy message: ' + text;
-    await handlePrompt(chatId, messageId, prompt);
+    await handlePrompt(key, messageId, prompt);
   };
 
   // ── Command handler ──
