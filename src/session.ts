@@ -9,7 +9,11 @@ import {
   type PermissionRequestResult,
   type SessionConfig,
   type CopilotClientOptions,
+  type MessageOptions,
 } from '@github/copilot-sdk';
+
+/** SDK-compatible file attachment */
+export type FileAttachment = NonNullable<MessageOptions['attachments']>[number];
 import { EventEmitter } from 'events';
 import { log } from './log.js';
 import { createTelegramTools } from './tools.js';
@@ -134,7 +138,7 @@ export class Session extends EventEmitter {
   private cwd = '';
 
   // Message queue for sequential processing
-  private queue: { prompt: string; resolve: (msg: CopilotMessage) => void; reject: (err: Error) => void }[] = [];
+  private queue: { prompt: string; attachments?: FileAttachment[]; resolve: (msg: CopilotMessage) => void; reject: (err: Error) => void }[] = [];
   private processing = false;
 
   get alive() {
@@ -309,10 +313,10 @@ export class Session extends EventEmitter {
 
   // ── Core ──
 
-  async send(prompt: string): Promise<CopilotMessage> {
+  async send(prompt: string, attachments?: FileAttachment[]): Promise<CopilotMessage> {
     if (!this._alive) throw new Error('Session not started');
     return new Promise((resolve, reject) => {
-      this.queue.push({ prompt, resolve, reject });
+      this.queue.push({ prompt, attachments, resolve, reject });
       this.processQueue();
     });
   }
@@ -321,7 +325,7 @@ export class Session extends EventEmitter {
     if (this.processing || !this.queue.length) return;
     this.processing = true;
     this._busy = true;
-    const { prompt, resolve, reject } = this.queue.shift()!;
+    const { prompt, attachments, resolve, reject } = this.queue.shift()!;
 
     try {
       let text = '';
@@ -337,8 +341,9 @@ export class Session extends EventEmitter {
         this.once('error', errorHandler);
       });
 
-      const sendOpts: { prompt: string; mode?: 'enqueue' | 'immediate' } = { prompt };
+      const sendOpts: MessageOptions = { prompt };
       if (this._messageMode) sendOpts.mode = this._messageMode;
+      if (attachments?.length) sendOpts.attachments = attachments;
 
       const result = await Promise.race([this.session!.sendAndWait(sendOpts, 300_000), errorPromise]);
       if (errorHandler) this.off('error', errorHandler);

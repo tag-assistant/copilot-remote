@@ -12,6 +12,7 @@ import type {
   ToolInfo,
   ToolsListResponse,
   SessionMessage,
+  FileAttachment,
 } from './session.js';
 import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
@@ -336,7 +337,7 @@ async function main(): Promise<void> {
   }
 
   // ── Prompt handler (streaming + reactions) ──
-  async function handlePrompt(chatId: string, msgId: number, prompt: string): Promise<void> {
+  async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
     let session: Session;
     try {
       session = await getSession(chatId);
@@ -558,7 +559,7 @@ async function main(): Promise<void> {
     };
 
     try {
-      const res = await session.send(prompt);
+      const res = await session.send(prompt, attachments);
       cleanup();
       clearInterval(typingInterval);
 
@@ -1297,6 +1298,17 @@ async function main(): Promise<void> {
           log.debug('Voice transcription failed:', e);
           // Fall through to file-based handling
         }
+      }
+
+      // Check if it's an image file — use SDK attachments for vision support
+      const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const isImage = imageExts.some((ext) => fileName.toLowerCase().endsWith(ext));
+
+      if (isImage) {
+        const prompt = caption || 'Describe this image.';
+        const attachments: FileAttachment[] = [{ type: 'file' as const, path: tmpPath }];
+        await handlePrompt(chatId, msgId, prompt, attachments);
+        return;
       }
 
       const prompt = caption
