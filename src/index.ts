@@ -455,7 +455,7 @@ async function main(): Promise<void> {
       const p: string[] = [];
       if (intentText) p.push('🎯 *' + intentText + '*');
       if (thinkingText && c.showThinking) {
-        const s = thinkingText.length > 1500 ? '…' + thinkingText.slice(-1500) : thinkingText;
+        const s = thinkingText;
         // Light escaping: only escape what breaks Telegram markdown italic
         p.push('💭 <i>' + s.replace(/[<>&]/g, c => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;') + '</i>');
       }
