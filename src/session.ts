@@ -225,7 +225,12 @@ export class Session extends EventEmitter {
   }
 
   private async handlePermission(req: PermissionRequest): Promise<PermissionRequestResult> {
-    // ask-all mode: always prompt
+    // If mode changed to allow-all or autopilot mid-session, auto-approve
+    if (this._permissionMode === 'allow-all' || this._permissionMode === 'autopilot') {
+      console.log('[SDK] Auto-approved (' + this._permissionMode + '): ' + req.kind);
+      return { kind: 'approved' };
+    }
+
     // smart mode: auto-approve safe ops, prompt for writes
     if (this._permissionMode === 'smart' && this.shouldAutoApprove(req)) {
       console.log('[SDK] Auto-approved: ' + req.kind + ' ' + ((req as any).fullCommandText ?? (req as any).url ?? '').slice(0, 80));
