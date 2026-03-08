@@ -62,7 +62,7 @@ export interface Client {
     replyToMsgId?: number,
     threadId?: number,
   ) => Promise<void>;
-  onCallback?: (callbackId: string, data: string, chatId: string, msgId: number) => Promise<void>;
+  onCallback?: (callbackId: string, data: string, chatId: string, msgId: number, threadId?: number) => Promise<void>;
   onReaction?: (emoji: string, chatId: string, msgId: number) => Promise<void>;
   onFile?: (
     fileId: string,

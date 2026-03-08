@@ -1146,9 +1146,12 @@ async function main(): Promise<void> {
     ]);
   };
 
-  client.onCallback = async (callbackId, data, chatId, msgId) => {
+  client.onCallback = async (callbackId, data, rawChatId, msgId, threadId) => {
     // Always answer callback to dismiss loading spinner
     client.answerCallback?.(callbackId);
+
+    // Resolve session key for topic-aware routing
+    const chatId = threadId ? sessionKey(rawChatId, threadId) : rawChatId;
 
     if (data.startsWith('perm:')) {
       const s = sessions.get(chatId);
@@ -1257,14 +1260,19 @@ async function main(): Promise<void> {
     if (data.startsWith('mode:')) {
       const newMode = data.slice(5) as 'interactive' | 'plan' | 'autopilot';
       const c = cfg(chatId);
+      log.debug(`Mode switch: ${c.mode} → ${newMode} [${chatId}]`);
       c.mode = newMode;
       c.autopilot = newMode === 'autopilot';
       setCfg(chatId, c);
       // Kill old session — next message will create a fresh one with new config
       const old = sessions.get(chatId);
-      if (old?.alive) await old.disconnect();
+      if (old?.alive) {
+        log.debug(`Killing session for mode switch [${chatId}]`);
+        await old.disconnect();
+      }
       sessions.delete(chatId);
       sessionStore.delete(chatId);
+      log.info(`Mode: ${newMode} [${chatId}]`);
       return sendConfigMenu(chatId, msgId);
     }
     if (data.startsWith('cfg:')) {

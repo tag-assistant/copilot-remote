@@ -119,6 +119,7 @@ export class TelegramClient implements Client {
     // Callback queries
     this.bot.on('callback_query:data', async (ctx) => {
       const chatId = String(ctx.callbackQuery.message?.chat?.id ?? '');
+      const threadId = (ctx.callbackQuery.message as unknown as Record<string, unknown>)?.message_thread_id as number | undefined;
       if (!chatId) {
         await ctx.answerCallbackQuery();
         return;
@@ -130,6 +131,7 @@ export class TelegramClient implements Client {
           ctx.callbackQuery.data,
           chatId,
           ctx.callbackQuery.message?.message_id ?? 0,
+          threadId,
         );
       } catch {
         /* ignore handler errors */
