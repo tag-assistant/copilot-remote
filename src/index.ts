@@ -1728,20 +1728,14 @@ async function main(): Promise<void> {
       const old = sessions.get(chatId);
       if (old?.alive) await old.disconnect();
       sessions.delete(chatId);
-      // Resume the selected session
+      // Point the session store at the selected session, then let getSession resume it
+      const e = entry[1];
+      sessionStore.set(chatId, { sessionId, cwd: e.cwd, model: e.model, createdAt: e.createdAt, lastUsed: Date.now() });
       try {
-        const c = cfg(chatId);
-        const s = new Session();
-        await s.resume(sessionId, {
-          cwd: entry[1].cwd,
-          model: entry[1].model || c.model,
-          reasoningEffort: c.reasoningEffort as any,
-        });
-        sessions.set(chatId, s);
-        registerSessionListeners(s, chatId);
+        await getSession(chatId);
         await client.editButtons(chatId, msgId, '✅ Resumed session `' + sessionId.slice(0, 8) + '`', []);
-      } catch (e) {
-        await client.editButtons(chatId, msgId, '❌ ' + e, []);
+      } catch (err) {
+        await client.editButtons(chatId, msgId, '❌ ' + err, []);
       }
       return;
     }
