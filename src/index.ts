@@ -1051,10 +1051,25 @@ async function main(): Promise<void> {
       case '/abort': {
         const s = sessions.get(chatId);
         if (s?.alive) {
-          s.kill();
-          sessions.delete(chatId);
-          sessionStore.delete(chatId);
-          await client.sendMessage(chatId, '🛑 Aborted. Session killed.');
+          try {
+            // Try steering first — tell the agent to stop
+            await s.sendImmediate('STOP. The user has aborted this task. Do not continue. Acknowledge the abort.');
+            await client.sendMessage(chatId, '🛑 Abort sent. Waiting for agent to stop...');
+            // Give it 5s to comply, then hard kill
+            setTimeout(() => {
+              if (s.alive) {
+                s.kill();
+                sessions.delete(chatId);
+                sessionStore.delete(chatId);
+                client.sendMessage(chatId, '💀 Hard killed — agent didn\'t stop.').catch(() => {});
+              }
+            }, 5000);
+          } catch {
+            s.kill();
+            sessions.delete(chatId);
+            sessionStore.delete(chatId);
+            await client.sendMessage(chatId, '🛑 Session killed.');
+          }
         } else {
           await client.sendMessage(chatId, '⚪ No active session.');
         }

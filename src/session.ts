@@ -233,12 +233,23 @@ export class Session extends EventEmitter {
         },
         onPreToolUse: async (input: { toolName?: string; arguments?: unknown }) => {
           this.emit('hook:pre_tool', { toolName: input.toolName, arguments: input.arguments });
+          return { permissionDecision: 'allow' as const };
         },
         onPostToolUse: async (input: { toolName?: string; result?: unknown }) => {
           this.emit('hook:post_tool', { toolName: input.toolName, result: input.result });
+          return undefined;
         },
-        onErrorOccurred: async (input: { error?: unknown; message?: string }) => {
+        onErrorOccurred: async (input: { error?: unknown; message?: string; errorContext?: string; recoverable?: boolean }) => {
           this.emit('hook:error', { error: input.error, message: input.message });
+          // Auto-retry model call errors
+          if (input.errorContext === 'model_call') {
+            return { errorHandling: 'retry' as const, retryCount: 3, userNotification: 'Model error — retrying...' };
+          }
+          // Skip recoverable tool errors
+          if (input.errorContext === 'tool_execution' && input.recoverable) {
+            return { errorHandling: 'skip' as const };
+          }
+          return undefined;
         },
         onUserPromptSubmitted: async (input: { prompt?: string }) => {
           this.emit('hook:user_prompt', { prompt: input.prompt });
