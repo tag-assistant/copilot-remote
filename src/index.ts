@@ -144,8 +144,7 @@ async function main(): Promise<void> {
       if (phase === 'thinking') {
         // Transition: clear thinking, start fresh with response
         phase = 'responding';
-        streamText = '';
-        streamMsgId = null; // new message for response
+        streamText += '\n';
       }
       streamText += text;
       scheduleEdit();
