@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     console.log('[Message] ' + chatId + ': ' + text + (replyText ? ' [reply to: ' + replyText.slice(0, 50) + '...]' : ''));
 
     if (text.startsWith('/')) {
-      await handleCommand(text, chatId);
+      await handleCommand(text, chatId, messageId);
       return;
     }
 
@@ -117,6 +117,10 @@ async function main(): Promise<void> {
       prompt = 'Context (from a previous message I\'m replying to):\n"""\n' + replyText + '\n"""\n\nMy message: ' + text;
     }
 
+    await handlePrompt(chatId, messageId, prompt);
+  });
+
+  async function handlePrompt(chatId: string, messageId: number, prompt: string): Promise<void> {
     // Get or create session
     let session = sessions.get(chatId);
     if (!session || !session.alive) {
@@ -333,9 +337,9 @@ async function main(): Promise<void> {
       await react('😱');
       await telegram.sendMessage(chatId, '❌ ' + String(err));
     }
-  });
+  }
 
-  async function handleCommand(text: string, chatId: string): Promise<void> {
+  async function handleCommand(text: string, chatId: string, messageId: number): Promise<void> {
     const [cmd, ...args] = text.split(' ');
 
     switch (cmd) {
@@ -477,29 +481,176 @@ async function main(): Promise<void> {
         break;
       }
 
+      // ── Copilot CLI passthrough commands ──
+      // These send the command directly to the Copilot session.
+      // The SDK/CLI handles them natively.
+
+      case '/plan': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        const planPrompt = args.length > 0
+          ? '/plan ' + args.join(' ')
+          : '/plan';
+        await telegram.sendMessage(chatId, '📋 Entering plan mode...');
+        // Send as a regular prompt — Copilot handles /plan internally
+        await handlePrompt(chatId, messageId, planPrompt);
+        break;
+      }
+
+      case '/research': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        if (args.length === 0) { await telegram.sendMessage(chatId, 'Usage: `/research <topic>`'); break; }
+        await telegram.sendMessage(chatId, '🔬 Starting deep research...');
+        await handlePrompt(chatId, messageId, '/research ' + args.join(' '));
+        break;
+      }
+
+      case '/compact': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await telegram.sendMessage(chatId, '🗜️ Compacting context...');
+        await handlePrompt(chatId, messageId, '/compact');
+        break;
+      }
+
+      case '/diff': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await telegram.sendMessage(chatId, '📝 Reviewing changes...');
+        await handlePrompt(chatId, messageId, '/diff');
+        break;
+      }
+
+      case '/review': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await telegram.sendMessage(chatId, '🔍 Running code review...');
+        await handlePrompt(chatId, messageId, '/review');
+        break;
+      }
+
+      case '/context': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/context');
+        break;
+      }
+
+      case '/usage': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/usage');
+        break;
+      }
+
+      case '/share': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        const shareArg = args.length > 0 ? ' ' + args.join(' ') : '';
+        await handlePrompt(chatId, messageId, '/share' + shareArg);
+        break;
+      }
+
+      case '/init': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await telegram.sendMessage(chatId, '📄 Initializing copilot-instructions.md...');
+        await handlePrompt(chatId, messageId, '/init');
+        break;
+      }
+
+      case '/fleet': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/fleet');
+        break;
+      }
+
+      case '/tasks': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/tasks');
+        break;
+      }
+
+      case '/resume': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        const resumeArg = args.length > 0 ? ' ' + args.join(' ') : '';
+        await handlePrompt(chatId, messageId, '/resume' + resumeArg);
+        break;
+      }
+
+      case '/instructions': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/instructions');
+        break;
+      }
+
+      case '/skills': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        await handlePrompt(chatId, messageId, '/skills');
+        break;
+      }
+
+      case '/mcp': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
+        const mcpArg = args.length > 0 ? ' ' + args.join(' ') : '';
+        await handlePrompt(chatId, messageId, '/mcp' + mcpArg);
+        break;
+      }
+
+      case '/clear': {
+        // Alias for /new
+        const session = sessions.get(chatId);
+        if (session?.alive) await session.kill();
+        sessions.delete(chatId);
+        await telegram.sendMessage(chatId, '🧹 Session cleared.');
+        break;
+      }
+
       case '/help':
       default:
         await telegram.sendMessage(chatId, [
           '⚡ *Copilot Remote v0.5.0*',
           '',
           '*Session*',
-          '`/start [dir]` — Start in directory',
+          '`/new` `/clear` — Fresh session',
           '`/stop` — Kill session',
-          '`/new` — Fresh session',
           '`/cd [dir]` — Change working directory',
           '`/status` — Session info',
+          '`/resume [id]` — Switch session',
           '',
-          '*Tools*',
-          '`/yes` `/y` — Approve tool action',
-          '`/no` `/n` — Deny tool action',
-          '`/abort` — Cancel current request',
+          '*Coding*',
+          '`/plan [task]` — Plan before coding',
+          '`/diff` — Review changes',
+          '`/review` — Code review agent',
+          '`/fleet` — Parallel subagents',
+          '`/tasks` — View background tasks',
+          '',
+          '*Research & Context*',
+          '`/research [topic]` — Deep research',
+          '`/context` — Token usage',
+          '`/usage` — Session metrics',
+          '`/compact` — Compress context',
+          '`/share` — Export to markdown/gist',
+          '',
+          '*Tools & Permissions*',
+          '`/yes` `/no` — Approve/deny action',
+          '`/abort` — Cancel request',
+          '`/allowall` — Toggle auto-approve',
           '',
           '*Customization*',
-          '`/config` — Settings (model, reactions, tools)',
-          '`/agent [name]` — Switch custom agent',
-          '',
-          'Or just type a prompt — session auto-starts.',
-          'Supports custom instructions, agents, skills, MCP servers.',
+          '`/config` — Settings',
+          '`/agent [name]` — Custom agent',
+          '`/init` — Setup copilot-instructions',
+          '`/instructions` — View instructions',
+          '`/skills` — Manage skills',
+          '`/mcp` — Manage MCP servers',
         ].join('\n'));
         break;
     }
