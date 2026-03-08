@@ -257,7 +257,7 @@ export class Session extends EventEmitter {
         this.emit('tool_complete', {
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
-          detailedContent: d.result?.detailedContent ?? d.result?.content,
+          detailedContent: (d.result as any)?.detailedContent ?? (d.result as any)?.content,
         });
         break;
       case 'permission.requested':
