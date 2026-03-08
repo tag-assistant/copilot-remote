@@ -342,6 +342,93 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, '❌ Failed to send file: ' + e);
       }
     });
+    session.on('photo', async (info: { path: string; caption?: string }) => {
+      try {
+        const { InputFile } = await import('grammy');
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        const source = info.path.startsWith('http') ? info.path : new InputFile(info.path);
+        await tc.sendPhoto(numericId, source, { caption: info.caption });
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to send photo: ' + e);
+      }
+    });
+    session.on('location', async (info: { lat: number; lon: number; title?: string }) => {
+      try {
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        if (info.title) {
+          await tc.sendVenue(numericId, info.lat, info.lon, info.title, '');
+        } else {
+          await tc.sendLocation(numericId, info.lat, info.lon);
+        }
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to send location: ' + e);
+      }
+    });
+    session.on('poll', async (info: { question: string; options: string[]; anonymous?: boolean; multiple?: boolean }) => {
+      try {
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        await tc.sendPoll(numericId, info.question, info.options.map((o: string) => ({ text: o })), {
+          is_anonymous: info.anonymous ?? true,
+          allows_multiple_answers: info.multiple ?? false,
+        });
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to send poll: ' + e);
+      }
+    });
+    session.on('voice', async (info: { path: string; caption?: string }) => {
+      try {
+        const { InputFile } = await import('grammy');
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        await tc.sendVoice(numericId, new InputFile(info.path), { caption: info.caption });
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to send voice: ' + e);
+      }
+    });
+    session.on('pin', async (info: { messageId: number }) => {
+      try {
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        await tc.pinChatMessage(numericId, info.messageId);
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to pin: ' + e);
+      }
+    });
+    session.on('create_topic', async (info: { name: string; iconColor?: number; resolve: (id: number) => void }) => {
+      try {
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        const result = await tc.createForumTopic(numericId, info.name, { icon_color: info.iconColor });
+        info.resolve(result.message_thread_id);
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to create topic: ' + e);
+        info.resolve(0);
+      }
+    });
+    session.on('react_to', async (info: { messageId: number; emoji: string }) => {
+      try {
+        client.setReaction(chatId, info.messageId, info.emoji);
+      } catch { /* ignore */ }
+    });
+    session.on('contact', async (info: { phone: string; firstName: string; lastName?: string }) => {
+      try {
+        const tc = (client as any).bot?.api;
+        if (!tc) throw new Error('No bot API');
+        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        await tc.sendContact(numericId, info.phone, info.firstName, { last_name: info.lastName });
+      } catch (e) {
+        await client.sendMessage(chatId, '❌ Failed to send contact: ' + e);
+      }
+    });
     session.on('hook:error', async (info: { error?: unknown; message?: string }) => {
       const msg = info.message ?? (info.error instanceof Error ? info.error.message : String(info.error ?? 'Unknown error'));
       await client.sendMessage(chatId, '⚠️ *SDK Error:* ' + msg);

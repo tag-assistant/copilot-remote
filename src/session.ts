@@ -192,12 +192,18 @@ export class Session extends EventEmitter {
           ? { enabled: false }
           : { enabled: true, backgroundCompactionThreshold: 0.8, bufferExhaustionThreshold: 0.95 },
       tools: createTelegramTools({
-        sendNotification: async (text: string) => {
-          this.emit('notification', text);
+        sendNotification: async (text) => { this.emit('notification', text); },
+        sendFile: async (path, caption) => { this.emit('file', { path, caption }); },
+        sendPhoto: async (path, caption) => { this.emit('photo', { path, caption }); },
+        sendLocation: async (lat, lon, title) => { this.emit('location', { lat, lon, title }); },
+        sendPoll: async (question, options, anonymous, multiple) => { this.emit('poll', { question, options, anonymous, multiple }); },
+        sendVoice: async (path, caption) => { this.emit('voice', { path, caption }); },
+        pinMessage: async (messageId) => { this.emit('pin', { messageId }); },
+        createTopic: async (name, iconColor) => {
+          return new Promise((resolve) => { this.emit('create_topic', { name, iconColor, resolve }); });
         },
-        sendFile: async (path: string, caption?: string) => {
-          this.emit('file', { path, caption });
-        },
+        react: async (messageId, emoji) => { this.emit('react_to', { messageId, emoji }); },
+        sendContact: async (phone, firstName, lastName) => { this.emit('contact', { phone, firstName, lastName }); },
       }),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
