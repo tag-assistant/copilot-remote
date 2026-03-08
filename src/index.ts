@@ -497,9 +497,9 @@ async function main(): Promise<void> {
       if (intentText) p.push('🎯 *' + intentText + '*');
       const thinking = thinkingText || (c.showThinking ? completedThinkingText : '');
       if (thinking && c.showThinking) {
-        // Wrap each line individually in italic markers — multi-line _..._ breaks markdown
-        const italicized = thinking.split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
-        p.push(italicized);
+        // Match OpenClaw: per-line italic wrapping with "Reasoning:" header
+        const italicLines = thinking.trim().split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
+        p.push('Reasoning:\n' + italicLines);
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
       if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
