@@ -1090,8 +1090,11 @@ async function main(): Promise<void> {
           break;
         }
         try {
+          client.sendTyping(chatId);
           const r = await s.compact();
-          await client.sendMessage(chatId, '🗜️ ' + (r?.tokensFreed ?? 0) + ' tokens freed');
+          const info = contextInfoMap.get(chatId);
+          const pct = info ? ' (' + Math.round((info.currentTokens / info.tokenLimit) * 100) + '% used)' : '';
+          await client.sendMessage(chatId, '🗜️ Compacted — ' + (r?.tokensFreed ?? 0) + ' tokens freed' + pct);
         } catch (e) {
           await client.sendMessage(chatId, '❌ ' + e);
         }
