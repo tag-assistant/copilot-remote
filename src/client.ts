@@ -46,15 +46,6 @@ export interface Client {
   pinMessage?(chatId: string, messageId: number): Promise<void>;
   deleteMessage?(chatId: string, messageId: number): Promise<void>;
 
-  // Reply keyboard (optional)
-  sendReplyKeyboard?(
-    chatId: string,
-    text: string,
-    keyboard: string[][],
-    opts?: { oneTime?: boolean; resize?: boolean; placeholder?: string },
-  ): Promise<number | null>;
-  removeReplyKeyboard?(chatId: string, text: string): Promise<number | null>;
-
   // Advanced (optional)
   answerCallback?(callbackId: string, text?: string, showAlert?: boolean): Promise<void>;
   editReplyMarkup?(chatId: string, messageId: number, buttons: any[][]): Promise<void>;

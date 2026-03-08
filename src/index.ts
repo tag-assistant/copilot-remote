@@ -1,7 +1,7 @@
 // Copilot Remote — Telegram ↔ Copilot SDK bridge
 import { Session } from './session.js';
 import type { Client } from './client.js';
-import { TelegramClient } from './clients/telegram.js';
+import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig } from './config-store.js';
 import { log } from './log.js';
@@ -552,7 +552,6 @@ async function main(): Promise<void> {
 
         // Git branch
         try {
-          const { execSync } = await import('child_process');
           const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, timeout: 3000 }).toString().trim();
           lines.push('📂 `' + dir + '` [⎇ ' + branch + ']');
         } catch {

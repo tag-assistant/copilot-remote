@@ -1,4 +1,4 @@
-// Copilot Remote — Telegram Bridge (grammY)
+// Copilot Remote — Telegram Client (grammY)
 import { Bot, type Context } from 'grammy';
 import { run, type RunnerHandle } from '@grammyjs/runner';
 import { autoRetry } from '@grammyjs/auto-retry';
@@ -8,6 +8,7 @@ import type { Transformer } from 'grammy';
 import { markdownToHtml, markdownToText } from './format.js';
 import { toTelegramReaction } from './emoji.js';
 import { log } from './log.js';
+import type { Client, MessageOptions, Button } from './client.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const DRAFT_ID_MAX = 2_147_483_647;
@@ -20,54 +21,33 @@ export interface TelegramConfig {
   allowedUsers: string[];
 }
 
-export class TelegramBridge {
+export class TelegramClient implements Client {
+  readonly name = 'telegram';
   private bot: Bot<MyContext>;
   private runner: RunnerHandle | null = null;
-  private onMessage:
-    | ((
-        text: string,
-        chatId: string,
-        messageId: number,
-        replyText?: string,
-        replyToMsgId?: number,
-        threadId?: number,
-      ) => void)
-    | null = null;
-  private onCallback: ((callbackId: string, data: string, chatId: string, messageId: number) => void) | null = null;
-  private onReaction: ((emoji: string, chatId: string, messageId: number) => void) | null = null;
-  private onFile:
-    | ((
-        fileId: string,
-        fileName: string,
-        caption: string,
-        chatId: string,
-        messageId: number,
-        threadId?: number,
-      ) => void)
-    | null = null;
-  private onInlineQuery: ((queryId: string, query: string) => void) | null = null;
   private pairedUser: string | null = null;
-  public topicNames = new Map<string, string>();
+  private topicNames = new Map<string, string>();
+
+  // Event handlers (set by bridge consumer)
+  onMessage?: Client['onMessage'];
+  onCallback?: Client['onCallback'];
+  onReaction?: Client['onReaction'];
+  onFile?: Client['onFile'];
+  onInlineQuery?: Client['onInlineQuery'];
 
   constructor(private config: TelegramConfig) {
     this.bot = new Bot<MyContext>(config.botToken);
 
     // ── Plugins ──
-    // Auto-retry on 429 rate limits and 500 errors
     this.bot.api.config.use(autoRetry());
-    // Default parse mode to HTML via transformer
     const defaultParseMode: Transformer = (prev, method, payload, signal) => {
-      if ('parse_mode' in payload && (payload as any).parse_mode === undefined) {
-        // Don't override explicit undefined (used for plain text fallback)
-      } else if (!('parse_mode' in payload)) {
-        (payload as any).parse_mode = 'HTML';
+      if (!('parse_mode' in payload)) {
+        (payload as Record<string, unknown>).parse_mode = 'HTML';
       }
       return prev(method, payload, signal);
     };
     this.bot.api.config.use(defaultParseMode);
-    // File download helpers
     this.bot.api.config.use(hydrateFiles(config.botToken));
-    // Hydrate API results with methods (msg.editText(), etc.)
     this.bot.use(hydrate());
 
     if (config.allowedUsers.length > 0) {
@@ -76,13 +56,12 @@ export class TelegramBridge {
 
     this.setupHandlers();
 
-    // Global error boundary
     this.bot.catch((err) => {
       log.error('[Telegram] Unhandled error:', err.message);
     });
   }
 
-  private isAllowed(userId: number | undefined, _chatType: string): boolean {
+  private isAllowed(userId: number | undefined): boolean {
     const id = String(userId);
     if (!this.pairedUser) {
       this.pairedUser = id;
@@ -93,12 +72,11 @@ export class TelegramBridge {
   }
 
   private setupHandlers(): void {
-    // Auth middleware — reject unauthorized users globally
+    // Auth middleware
     this.bot.use(async (ctx, next) => {
-      const userId = ctx.from?.id;
-      if (!this.isAllowed(userId, ctx.chat?.type ?? '')) {
+      if (!this.isAllowed(ctx.from?.id)) {
         if (ctx.chat?.type === 'private') {
-          await ctx.reply('⛔ This instance is paired with another user.');
+          await ctx.reply('⛔ This instance is paired with another user.', { parse_mode: undefined });
         }
         return;
       }
@@ -107,7 +85,6 @@ export class TelegramBridge {
 
     // Text messages
     this.bot.on('message:text', async (ctx) => {
-      // Track topic name
       const threadId = ctx.message.message_thread_id;
       if (threadId) {
         const topicKey = ctx.chat.id + ':' + threadId;
@@ -157,7 +134,6 @@ export class TelegramBridge {
       } catch {
         /* ignore handler errors */
       }
-      // Always answer to dismiss loading
       await ctx.answerCallbackQuery();
     });
 
@@ -171,37 +147,35 @@ export class TelegramBridge {
     this.bot.on('message_reaction', async (ctx) => {
       const r = ctx.messageReaction;
       const chatId = String(r.chat?.id ?? '');
-      const userId = String(r.user?.id ?? (r as any).actor_chat?.id ?? '');
+      const userId = String(r.user?.id ?? (r as Record<string, any>).actor_chat?.id ?? '');
       if (userId !== this.pairedUser || !chatId) return;
       const emojis = (r.new_reaction ?? []).filter((e) => e.type === 'emoji').map((e) => e.emoji);
       for (const emoji of emojis) this.onReaction?.(emoji, chatId, r.message_id);
     });
   }
 
-  setMessageHandler(handler: typeof this.onMessage): void {
-    this.onMessage = handler;
-  }
-  setCallbackHandler(handler: typeof this.onCallback): void {
-    this.onCallback = handler;
-  }
-  setReactionHandler(handler: typeof this.onReaction): void {
-    this.onReaction = handler;
-  }
-  setFileHandler(handler: typeof this.onFile): void {
-    this.onFile = handler;
-  }
-  setInlineQueryHandler(handler: typeof this.onInlineQuery): void {
-    this.onInlineQuery = handler;
-  }
+  async start(): Promise<void> {
+    // Register bot command menu
+    await this.bot.api
+      .setMyCommands([
+        { command: 'new', description: 'Fresh session' },
+        { command: 'stop', description: 'Kill session' },
+        { command: 'cd', description: 'Change working directory' },
+        { command: 'status', description: 'Model, mode, cwd, quota' },
+        { command: 'config', description: 'Settings menu' },
+        { command: 'plan', description: 'Plan mode' },
+        { command: 'agent', description: 'Switch agent' },
+        { command: 'compact', description: 'Compress context' },
+        { command: 'help', description: 'All commands' },
+      ])
+      .catch(() => {});
 
-  async startPolling(): Promise<void> {
     if (this.pairedUser) {
       console.log('[Telegram] Polling started — paired with user ' + this.pairedUser);
     } else {
       console.log('[Telegram] Polling started — waiting for first user to pair');
     }
 
-    // Use @grammyjs/runner for concurrent update handling
     this.runner = run(this.bot, {
       runner: {
         fetch: {
@@ -210,11 +184,10 @@ export class TelegramBridge {
       },
     });
 
-    // Block until runner stops
     await this.runner.task();
   }
 
-  stopPolling(): void {
+  stop(): void {
     if (this.runner?.isRunning()) {
       this.runner.stop();
     }
@@ -222,14 +195,10 @@ export class TelegramBridge {
 
   // ── Messaging (HTML with plain text fallback) ──
 
-  async sendMessage(
-    chatId: string | number,
-    text: string,
-    opts?: { replyTo?: number; disableLinkPreview?: boolean; threadId?: number },
-  ): Promise<number | null> {
+  async sendMessage(chatId: string, text: string, opts?: MessageOptions): Promise<number | null> {
     const chunks = this.splitMessage(text);
     let lastMsgId: number | null = null;
-    const extra: Record<string, any> = {};
+    const extra: Record<string, unknown> = {};
     if (opts?.replyTo) extra.reply_parameters = { message_id: opts.replyTo, allow_sending_without_reply: true };
     if (opts?.disableLinkPreview) extra.link_preview_options = { is_disabled: true };
     if (opts?.threadId) extra.message_thread_id = opts.threadId;
@@ -241,20 +210,15 @@ export class TelegramBridge {
     return lastMsgId;
   }
 
-  async editMessage(chatId: string | number, messageId: number, text: string): Promise<void> {
+  async editMessage(chatId: string, msgId: number, text: string): Promise<void> {
     const truncated = text.slice(0, MAX_MESSAGE_LENGTH);
-    await this.sendText('editMessageText', { chat_id: chatId, message_id: messageId }, truncated);
+    await this.sendText('editMessageText', { chat_id: chatId, message_id: msgId }, truncated);
   }
 
-  async sendMessageWithButtons(
-    chatId: string | number,
-    text: string,
-    buttons: { text: string; data: string }[][],
-    threadId?: number,
-  ): Promise<number | null> {
+  async sendButtons(chatId: string, text: string, buttons: Button[][], threadId?: number): Promise<number | null> {
     const markup = {
       inline_keyboard: buttons.map((row) =>
-        row.map((btn: any) => ({
+        row.map((btn) => ({
           text: btn.text,
           callback_data: btn.data,
           ...(btn.style ? { style: btn.style } : {}),
@@ -269,16 +233,11 @@ export class TelegramBridge {
     return res?.message_id ?? null;
   }
 
-  async editMessageButtons(
-    chatId: string | number,
-    messageId: number,
-    text: string,
-    buttons?: { text: string; data: string }[][],
-  ): Promise<void> {
-    const markup = buttons
+  async editButtons(chatId: string, msgId: number, text: string, buttons: Button[][]): Promise<void> {
+    const markup = buttons.length
       ? {
           inline_keyboard: buttons.map((row) =>
-            row.map((btn: any) => ({
+            row.map((btn) => ({
               text: btn.text,
               callback_data: btn.data,
               ...(btn.style ? { style: btn.style } : {}),
@@ -286,17 +245,17 @@ export class TelegramBridge {
           ),
         }
       : { inline_keyboard: [] };
-    await this.sendText('editMessageText', { chat_id: chatId, message_id: messageId, reply_markup: markup }, text);
+    await this.sendText('editMessageText', { chat_id: chatId, message_id: msgId, reply_markup: markup }, text);
   }
 
   // ── Draft streaming ──
 
   private draftSupported: boolean | null = null;
 
-  async sendDraft(chatId: string | number, draftId: number, text: string, threadId?: number): Promise<boolean> {
+  async sendDraft(chatId: string, draftId: number, text: string, threadId?: number): Promise<boolean> {
     if (this.draftSupported === false) return false;
     try {
-      const params: Record<string, any> = {
+      const params: Record<string, unknown> = {
         chat_id: chatId,
         draft_id: draftId,
         text: markdownToHtml(text),
@@ -322,16 +281,16 @@ export class TelegramBridge {
 
   // ── Presence ──
 
-  async sendTyping(chatId: string | number, threadId?: number): Promise<void> {
+  async sendTyping(chatId: string, threadId?: number): Promise<void> {
     await this.bot.api.sendChatAction(chatId, 'typing', { message_thread_id: threadId }).catch(() => {});
   }
 
-  async setReaction(chatId: string | number, messageId: number, emoji: string): Promise<void> {
+  async setReaction(chatId: string, messageId: number, emoji: string): Promise<void> {
     const safe = toTelegramReaction(emoji);
-    await this.bot.api.setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji: safe as any }]).catch(() => {});
+    await this.bot.api.setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji: safe as never }]).catch(() => {});
   }
 
-  async removeReaction(chatId: string | number, messageId: number): Promise<void> {
+  async removeReaction(chatId: string, messageId: number): Promise<void> {
     await this.bot.api.setMessageReaction(chatId, messageId, []).catch(() => {});
   }
 
@@ -340,7 +299,6 @@ export class TelegramBridge {
   async getFileUrl(fileId: string): Promise<string | null> {
     try {
       const file = await this.bot.api.getFile(fileId);
-      // Use the files plugin's getUrl() method if available, otherwise build manually
       const url =
         (file as any).getUrl?.() ??
         (file.file_path ? 'https://api.telegram.org/file/bot' + this.config.botToken + '/' + file.file_path : null);
@@ -350,7 +308,7 @@ export class TelegramBridge {
     }
   }
 
-  async sendDocument(chatId: string | number, url: string, filename: string, caption?: string): Promise<number | null> {
+  async sendDocument(chatId: string, url: string, filename: string, caption?: string): Promise<number | null> {
     try {
       const res = await this.bot.api.sendDocument(chatId, url, { caption: caption ?? filename });
       return res.message_id;
@@ -359,7 +317,7 @@ export class TelegramBridge {
     }
   }
 
-  async sendPhoto(chatId: string | number, url: string, caption?: string): Promise<number | null> {
+  async sendPhoto(chatId: string, url: string, caption?: string): Promise<number | null> {
     try {
       const res = await this.bot.api.sendPhoto(chatId, url, { ...(caption ? { caption } : {}) });
       return res.message_id;
@@ -370,40 +328,31 @@ export class TelegramBridge {
 
   // ── Forum topics ──
 
-  async createForumTopic(chatId: string | number, name: string): Promise<number | null> {
+  async createForumTopic(chatId: string, name: string): Promise<number | null> {
     try {
       const res = await this.bot.api.createForumTopic(chatId, name);
       return res.message_thread_id ?? null;
-    } catch (e: any) {
-      log.error('createForumTopic failed:', e?.message ?? e);
+    } catch (e: unknown) {
+      log.error('createForumTopic failed:', e instanceof Error ? e.message : e);
       return null;
     }
   }
 
-  async deleteForumTopic(chatId: string | number, threadId: number): Promise<void> {
+  async deleteForumTopic(chatId: string, threadId: number): Promise<void> {
     await this.bot.api.deleteForumTopic(chatId, threadId).catch(() => {});
   }
 
-  async pinMessage(chatId: string | number, messageId: number): Promise<void> {
+  async pinMessage(chatId: string, messageId: number): Promise<void> {
     await this.bot.api.pinChatMessage(chatId, messageId, { disable_notification: true }).catch(() => {});
   }
 
-  async deleteMessage(chatId: string | number, messageId: number): Promise<void> {
+  async deleteMessage(chatId: string, messageId: number): Promise<void> {
     await this.bot.api.deleteMessage(chatId, messageId).catch(() => {});
   }
 
-  async sendTypingToThread(chatId: string | number, threadId: number): Promise<void> {
-    await this.bot.api.sendChatAction(chatId, 'typing', { message_thread_id: threadId }).catch(() => {});
-  }
-
-  // ── Bot commands & profile ──
-
-  async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
-    await this.bot.api.setMyCommands(commands).catch(() => {});
-  }
+  // ── Bot profile ──
 
   async setMyProfilePhoto(photoUrl: string): Promise<void> {
-    // grammY doesn't have a direct helper; use raw API
     try {
       const res = await fetch(photoUrl);
       const buffer = Buffer.from(await res.arrayBuffer());
@@ -430,55 +379,23 @@ export class TelegramBridge {
     await this.bot.api.answerCallbackQuery(callbackId, { text, show_alert: showAlert }).catch(() => {});
   }
 
-  async editReplyMarkup(chatId: string | number, messageId: number, buttons: any[][]): Promise<void> {
+  async editReplyMarkup(chatId: string, messageId: number, buttons: any[][]): Promise<void> {
     await this.bot.api
-      .editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: buttons } })
+      .editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: buttons as never } })
       .catch(() => {});
-  }
-
-  async sendReplyKeyboard(
-    chatId: string | number,
-    text: string,
-    keyboard: string[][],
-    opts?: { oneTime?: boolean; resize?: boolean; placeholder?: string },
-  ): Promise<number | null> {
-    const res = await this.sendText(
-      'sendMessage',
-      {
-        chat_id: chatId,
-        reply_markup: {
-          keyboard: keyboard.map((row) => row.map((t) => ({ text: t }))),
-          one_time_keyboard: opts?.oneTime ?? false,
-          resize_keyboard: opts?.resize ?? true,
-          input_field_placeholder: opts?.placeholder,
-        },
-      },
-      text,
-    );
-    return res?.message_id ?? null;
-  }
-
-  async removeReplyKeyboard(chatId: string | number, text: string): Promise<number | null> {
-    const res = await this.sendText(
-      'sendMessage',
-      {
-        chat_id: chatId,
-        reply_markup: { remove_keyboard: true },
-      },
-      text,
-    );
-    return res?.message_id ?? null;
   }
 
   async answerInlineQuery(queryId: string, results: any[]): Promise<void> {
     await this.bot.api.answerInlineQuery(queryId, results, { cache_time: 0 }).catch(() => {});
   }
 
+  getTopicName(sessionKey: string): string | undefined {
+    return this.topicNames.get(sessionKey);
+  }
+
   // ── Internal ──
 
-  private async sendText(method: string, params: Record<string, any>, text: string): Promise<any> {
-    // Default parse mode is HTML (via transformer), so the success path just sends HTML.
-    // On failure (invalid HTML from Copilot output), retry with plain text and no parse_mode.
+  private async sendText(method: string, params: Record<string, unknown>, text: string): Promise<any> {
     try {
       return await (this.bot.api.raw as any)[method]({ ...params, text: markdownToHtml(text) });
     } catch {
