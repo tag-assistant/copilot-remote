@@ -6,7 +6,7 @@ import { autoRetry } from '@grammyjs/auto-retry';
 import { hydrate, type HydrateFlavor } from '@grammyjs/hydrate';
 import { hydrateFiles, type FileFlavor } from '@grammyjs/files';
 import type { Transformer } from 'grammy';
-import { markdownToHtml, markdownToText } from './format.js';
+import { markdownToHtml, markdownToText, markdownToTelegramChunks } from './format.js';
 import { toTelegramReaction } from './emoji.js';
 import { log } from './log.js';
 import type { Client, MessageOptions, Button } from './client.js';
@@ -253,7 +253,9 @@ export class TelegramClient implements Client {
   // ── Messaging (HTML with plain text fallback) ──
 
   async sendMessage(chatId: string, text: string, opts?: MessageOptions): Promise<number | null> {
-    const chunks = this.splitMessage(text);
+    // Split at the markdown IR level to avoid breaking mid-HTML tag.
+    // Ported from OpenClaw's renderTelegramChunksWithinHtmlLimit (MIT).
+    const chunks = markdownToTelegramChunks(text, MAX_MESSAGE_LENGTH);
     let lastMsgId: number | null = null;
     const extra: Record<string, unknown> = {};
     if (opts?.replyTo) extra.reply_parameters = { message_id: opts.replyTo, allow_sending_without_reply: true };
@@ -261,8 +263,28 @@ export class TelegramClient implements Client {
     if (opts?.threadId) extra.message_thread_id = opts.threadId;
 
     for (const chunk of chunks) {
-      const res = await this.sendText('sendMessage', { chat_id: chatId, ...extra }, chunk);
-      lastMsgId = res?.message_id ?? null;
+      try {
+        const res = await (this.bot.api.raw as Record<string, Function>)['sendMessage']({
+          chat_id: chatId,
+          ...extra,
+          text: chunk.html,
+          parse_mode: 'HTML',
+        });
+        lastMsgId = (res as { message_id?: number })?.message_id ?? null;
+      } catch {
+        // Fallback: send as plain text if HTML fails
+        try {
+          const res = await (this.bot.api.raw as Record<string, Function>)['sendMessage']({
+            chat_id: chatId,
+            ...extra,
+            text: chunk.text,
+            parse_mode: undefined,
+          });
+          lastMsgId = (res as { message_id?: number })?.message_id ?? null;
+        } catch {
+          // Skip failed chunk
+        }
+      }
     }
     if (lastMsgId && opts?.threadId) this.msgThreadMap.set(lastMsgId, opts.threadId);
     return lastMsgId;
@@ -484,21 +506,5 @@ export class TelegramClient implements Client {
     }
   }
 
-  private splitMessage(text: string): string[] {
-    if (text.length <= MAX_MESSAGE_LENGTH) return [text];
-    const chunks: string[] = [];
-    let remaining = text;
-    while (remaining.length > 0) {
-      if (remaining.length <= MAX_MESSAGE_LENGTH) {
-        chunks.push(remaining);
-        break;
-      }
-      let splitAt = remaining.lastIndexOf('\n', MAX_MESSAGE_LENGTH);
-      if (splitAt < MAX_MESSAGE_LENGTH * 0.5) splitAt = remaining.lastIndexOf(' ', MAX_MESSAGE_LENGTH);
-      if (splitAt < MAX_MESSAGE_LENGTH * 0.3) splitAt = MAX_MESSAGE_LENGTH;
-      chunks.push(remaining.slice(0, splitAt));
-      remaining = remaining.slice(splitAt).trimStart();
-    }
-    return chunks;
-  }
+
 }
