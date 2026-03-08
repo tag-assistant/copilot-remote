@@ -884,8 +884,11 @@ async function main(): Promise<void> {
         const dir = workDir(chatId);
         const lines: string[] = [];
 
-        // Session ID
-        if (s.sessionId) lines.push('🆔 `' + s.sessionId + '`');
+        // Session ID + resume command
+        if (s.sessionId) {
+          lines.push('🆔 `' + s.sessionId + '`');
+          lines.push('`copilot --resume ' + s.sessionId + '`');
+        }
 
         // Git branch
         try {
