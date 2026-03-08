@@ -46,6 +46,7 @@ export class TelegramBridge {
     | null = null;
   private onInlineQuery: ((queryId: string, query: string) => void) | null = null;
   private pairedUser: string | null = null;
+  public topicNames = new Map<string, string>(); // "chatId:threadId" → topic name
 
   constructor(private config: TelegramConfig) {
     this.baseUrl = TELEGRAM_API + config.botToken;
@@ -100,7 +101,9 @@ export class TelegramBridge {
               console.log('[Telegram] Auto-paired with user ' + userId + ' (' + (msg.from?.first_name ?? '') + ')');
             }
             if (userId !== this.pairedUser) {
-              await this.sendMessage(msg.chat.id, '⛔ This instance is paired with another user.');
+              if (msg.chat.type === 'private') {
+                await this.sendMessage(msg.chat.id, '⛔ This instance is paired with another user.');
+              }
               continue;
             }
             this.onMessage?.(
@@ -111,6 +114,14 @@ export class TelegramBridge {
               msg.reply_to_message?.message_id,
               msg.message_thread_id,
             );
+            // Track topic name from forum_topic_created service message
+            if (msg.message_thread_id) {
+              const topicKey = msg.chat.id + ':' + msg.message_thread_id;
+              const topicCreated = msg.reply_to_message?.forum_topic_created;
+              if (topicCreated?.name && !this.topicNames.has(topicKey)) {
+                this.topicNames.set(topicKey, topicCreated.name);
+              }
+            }
           } else if (
             update.message &&
             (update.message.photo || update.message.document || update.message.voice || update.message.audio)

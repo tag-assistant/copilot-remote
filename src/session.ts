@@ -20,6 +20,7 @@ export interface SessionOptions {
   autopilot?: boolean;
   agent?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  topicContext?: string; // e.g. "Fix auth bug" — injected into system prompt
 }
 
 export interface CopilotMessage {
@@ -69,6 +70,9 @@ export class Session extends EventEmitter {
           "When asked to do something, do it — don't just explain how.",
           'Show your work: mention files you read, commands you ran, changes you made.',
           'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
+          ...(opts.topicContext
+            ? ['This conversation topic is: "' + opts.topicContext + '". Stay focused on this subject.']
+            : []),
         ].join('\n'),
       },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),

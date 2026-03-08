@@ -60,6 +60,7 @@ export interface Client {
   editReplyMarkup?(chatId: string, messageId: number, buttons: any[][]): Promise<void>;
   setMyProfilePhoto?(photoUrl: string): Promise<void>;
   answerInlineQuery?(queryId: string, results: any[]): Promise<void>;
+  getTopicName?(sessionKey: string): string | undefined;
 
   // Event handlers (set by bridge)
   onMessage?: (
