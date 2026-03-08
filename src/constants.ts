@@ -3,6 +3,7 @@ import type { PermKind } from './config-store.js';
 
 /** Tool execution event emitted by the session */
 export interface ToolEvent {
+  toolCallId?: string;
   toolName: string;
   arguments?: Record<string, string>;
   success?: boolean;

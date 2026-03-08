@@ -297,7 +297,7 @@ export class Session extends EventEmitter {
         });
         break;
       case 'tool.execution_start':
-        this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments });
+        this.emit('tool_start', { toolCallId: d.toolCallId, toolName: d.name ?? d.toolName, arguments: d.arguments });
         break;
       case 'tool.execution_complete': {
         const result = d.result as any;
@@ -311,6 +311,7 @@ export class Session extends EventEmitter {
           }
         }
         this.emit('tool_complete', {
+          toolCallId: d.toolCallId,
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
           detailedContent: (d.result as any)?.detailedContent ?? (d.result as any)?.content,

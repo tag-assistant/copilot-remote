@@ -498,7 +498,7 @@ async function main(): Promise<void> {
       return p.join('\n\n');
     };
 
-    let streamGeneration = 0;
+    const streamGeneration = 0;
     const staleMessageIds: number[] = []; // messages from old generations, cleaned up at finalize
 
     // Minimum chars before sending first streaming message.
@@ -591,7 +591,9 @@ async function main(): Promise<void> {
       responseText += t;
       schedEdit();
     };
+    const toolStartTimes = new Map<string, number>();
     const onToolStart = (t: ToolEvent) => {
+      if (t.toolCallId) toolStartTimes.set(t.toolCallId, Date.now());
       client.sendTyping(chatId);
       // React based on tool type
       const toolReaction = t.toolName === 'web_fetch' || t.toolName === 'web_search' ? LIFECYCLE_REACTIONS.web
@@ -629,7 +631,10 @@ async function main(): Promise<void> {
       client.sendTyping(chatId); // re-send typing (Telegram cancels on edit)
       if (t.toolName === 'report_intent') return; // already handled
       if (!c.showTools || !toolLines.length) return;
-      toolLines[toolLines.length - 1] += t.success !== false ? ' ✓' : ' ✗';
+      const elapsed = t.toolCallId ? toolStartTimes.get(t.toolCallId) : undefined;
+      const duration = elapsed ? ` ${((Date.now() - elapsed) / 1000).toFixed(1)}s` : '';
+      if (t.toolCallId) toolStartTimes.delete(t.toolCallId);
+      toolLines[toolLines.length - 1] += (t.success !== false ? ' ✓' : ' ✗') + duration;
       schedEdit();
 
       // Send any generated images as Telegram photos
