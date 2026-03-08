@@ -213,7 +213,7 @@ async function main(): Promise<void> {
   const isGlobalKey = (key: string) => !key.includes(':');
 
   const cfg = (key: string) => configStore.get(key);
-  const setCfg = (key: string, updates: Partial<ChatConfig>) => configStore.set(key, updates, isGlobalKey(key));
+  const setCfg = (key: string, updates: Partial<ChatConfig>) => configStore.set(key, updates, true);
 
   const sessions = new Map<string, Session>();
   const workDirs = new Map<string, string>();
@@ -1981,8 +1981,6 @@ async function main(): Promise<void> {
       const c = cfg(chatId);
       c.autopilot = !c.autopilot;
       c.mode = c.autopilot ? 'autopilot' : 'interactive';
-      // Always save autopilot globally (not just as thread override)
-      configStore.set(chatId, { autopilot: c.autopilot, mode: c.mode }, true);
       setCfg(chatId, c);
       // Kill old session — next message will create a fresh one with new config
       const old = sessions.get(chatId);
