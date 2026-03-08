@@ -1,6 +1,7 @@
 // Copilot Remote — Telegram ↔ Copilot SDK bridge
 import { Session } from './session.js';
-import { TelegramBridge } from './telegram.js';
+import type { Client } from './client.js';
+import { TelegramClient } from './clients/telegram.js';
 import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
 
   log.info('⚡ Copilot Remote v0.5 | dir: ' + config.workDir);
 
-  const tg = new TelegramBridge({ botToken: config.botToken, allowedUsers: config.allowedUsers });
+  const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
 
   // ── Per-chat state ──
   interface ChatConfig { showUsage: boolean; showThinking: boolean; showTools: boolean; showReactions: boolean; autopilot: boolean; model: string; agent: string | null }
@@ -75,9 +76,9 @@ async function main(): Promise<void> {
   async function handlePrompt(chatId: string, msgId: number, prompt: string): Promise<void> {
     const session = await getSession(chatId);
     const c = cfg(chatId);
-    const react = c.showReactions ? (e: string) => tg.setReaction(chatId, msgId, e) : async () => {};
+    const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
     await react('🤔');
-    await tg.sendTyping(chatId);
+    await client.sendTyping(chatId);
 
     let streamMsgId: number | null = null;
     let thinkingText = '', responseText = '';
@@ -103,9 +104,9 @@ async function main(): Promise<void> {
       if (!text.trim()) return;
       if (!streamMsgId) {
         if (text.length < 15) return;
-        streamMsgId = await tg.sendMessage(chatId, text, { replyTo: msgId, disableLinkPreview: true });
+        streamMsgId = await client.sendMessage(chatId, text, { replyTo: msgId, disableLinkPreview: true });
       } else {
-        await tg.editMessage(chatId, streamMsgId, text);
+        await client.editMessage(chatId, streamMsgId, text);
       }
     };
 
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     const onThink = (t: string) => { if (c.showThinking) { thinkingText += t; schedEdit(); } };
     const onDelta = (t: string) => { thinkingText = ''; responseText += t; schedEdit(); };
     const onToolStart = (t: any) => {
-      tg.sendTyping(chatId);
+      client.sendTyping(chatId);
       react('👨‍💻');
       if (!c.showTools) return;
       const label = prettyTool[t.toolName] ?? '🔧 ' + t.toolName;
@@ -144,7 +145,7 @@ async function main(): Promise<void> {
                  : p.kind === 'url' ? '`' + (p.url ?? '').slice(0, 200) + '`'
                  : p.intention ?? '';
       if (p.intention && p.kind !== detail) detail += '\n_' + p.intention + '_';
-      const id = await tg.sendMessageWithButtons(chatId, icon + ' *' + title + '*\n' + detail, [
+      const id = await client.sendButtons(chatId, icon + ' *' + title + '*\n' + detail, [
         [{ text: '✅ Approve', data: 'perm:yes' }, { text: '❌ Deny', data: 'perm:no' }, { text: '✅ All', data: 'perm:all' }],
       ]);
       if (id) pendingPerms.set(id, chatId);
@@ -179,30 +180,30 @@ async function main(): Promise<void> {
       }
 
       if (streamMsgId && final.length <= 4096) {
-        await tg.editMessage(chatId, streamMsgId, final);
+        await client.editMessage(chatId, streamMsgId, final);
       } else if (streamMsgId) {
-        await tg.editMessage(chatId, streamMsgId, final.slice(0, 4096));
-        await tg.sendMessage(chatId, final.slice(4096), { disableLinkPreview: true });
+        await client.editMessage(chatId, streamMsgId, final.slice(0, 4096));
+        await client.sendMessage(chatId, final.slice(4096), { disableLinkPreview: true });
       } else {
-        await tg.sendMessage(chatId, final, { replyTo: msgId, disableLinkPreview: true });
+        await client.sendMessage(chatId, final, { replyTo: msgId, disableLinkPreview: true });
       }
-      await tg.removeReaction(chatId, msgId);
+      await client.removeReaction(chatId, msgId);
     } catch (err) {
       cleanup();
       await react('😱');
-      await tg.sendMessage(chatId, '❌ ' + String(err));
+      await client.sendMessage(chatId, '❌ ' + String(err));
     }
   }
 
   // ── Message handler ──
-  tg.setMessageHandler(async (text, chatId, messageId, replyText, replyToMsgId) => {
+  client.onMessage = async (text, chatId, messageId, replyText, replyToMsgId) => {
     // Reply to permission message
     if (replyToMsgId && pendingPerms.has(replyToMsgId)) {
       const lower = text.toLowerCase().trim();
       const s = sessions.get(chatId);
       if (s?.alive) {
-        if (['yes', 'y', 'approve', '👍'].includes(lower)) { s.approve(); pendingPerms.delete(replyToMsgId); await tg.editMessageButtons(chatId, replyToMsgId, '✅ Approved', []); return; }
-        if (['no', 'n', 'deny', '👎'].includes(lower)) { s.deny(); pendingPerms.delete(replyToMsgId); await tg.editMessageButtons(chatId, replyToMsgId, '❌ Denied', []); return; }
+        if (['yes', 'y', 'approve', '👍'].includes(lower)) { s.approve(); pendingPerms.delete(replyToMsgId); await client.editButtons(chatId, replyToMsgId, '✅ Approved', []); return; }
+        if (['no', 'n', 'deny', '👎'].includes(lower)) { s.deny(); pendingPerms.delete(replyToMsgId); await client.editButtons(chatId, replyToMsgId, '❌ Denied', []); return; }
       }
     }
 
@@ -211,7 +212,7 @@ async function main(): Promise<void> {
     let prompt = text;
     if (replyText) prompt = 'Context (replying to):\n"""\n' + replyText + '\n"""\n\nMy message: ' + text;
     await handlePrompt(chatId, messageId, prompt);
-  });
+  };
 
   // ── Command handler ──
   async function handleCommand(text: string, chatId: string, msgId: number): Promise<void> {
@@ -221,7 +222,7 @@ async function main(): Promise<void> {
     // Passthrough prompt commands
     const pc = PROMPT_COMMANDS[cmd];
     if (pc) {
-      if (pc.usage && !argStr) { await tg.sendMessage(chatId, 'Usage: ' + pc.usage); return; }
+      if (pc.usage && !argStr) { await client.sendMessage(chatId, 'Usage: ' + pc.usage); return; }
       const s = sessions.get(chatId);
       if (!s?.alive) { await getSession(chatId); }
       return handlePrompt(chatId, msgId, pc.prompt(argStr));
@@ -234,26 +235,26 @@ async function main(): Promise<void> {
         if (old?.alive) old.kill();
         sessions.delete(chatId);
         const s = await getSession(chatId);
-        await tg.sendMessage(chatId, cmd === '/new' ? '🆕 New session.' : '✅ Ready in `' + workDir(chatId) + '`');
+        await client.sendMessage(chatId, cmd === '/new' ? '🆕 New session.' : '✅ Ready in `' + workDir(chatId) + '`');
         break;
       }
       case '/stop': case '/clear': {
         const s = sessions.get(chatId);
         if (s?.alive) s.kill();
         sessions.delete(chatId);
-        await tg.sendMessage(chatId, '🛑 Session cleared.');
+        await client.sendMessage(chatId, '🛑 Session cleared.');
         break;
       }
       case '/cd': {
-        if (!args[0]) { await tg.sendMessage(chatId, '📂 ' + workDir(chatId)); break; }
+        if (!args[0]) { await client.sendMessage(chatId, '📂 ' + workDir(chatId)); break; }
         workDirs.set(chatId, args[0]);
         const s = sessions.get(chatId); if (s?.alive) s.kill(); sessions.delete(chatId);
-        await tg.sendMessage(chatId, '📂 Switched to `' + args[0] + '`');
+        await client.sendMessage(chatId, '📂 Switched to `' + args[0] + '`');
         break;
       }
       case '/status': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, '⚪ No session. Send a message to start.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, '⚪ No session. Send a message to start.'); break; }
         const lines = ['✅ `' + workDir(chatId) + '`'];
         try {
           const [model, mode, agent] = await Promise.all([
@@ -268,26 +269,26 @@ async function main(): Promise<void> {
           const snap = (q as any)?.quotaSnapshots?.[0];
           if (snap) lines.push('📊 ' + snap.usedRequests + '/' + snap.entitlementRequests + ' (' + snap.remainingPercentage + '% left)');
         } catch {}
-        await tg.sendMessage(chatId, lines.join('\n'));
+        await client.sendMessage(chatId, lines.join('\n'));
         break;
       }
       case '/yes': case '/y': { sessions.get(chatId)?.approve(); break; }
       case '/no': case '/n': { sessions.get(chatId)?.deny(); break; }
       case '/abort': {
         const s = sessions.get(chatId);
-        if (s?.alive) { await s.abort(); await tg.sendMessage(chatId, '🛑 Aborted.'); }
+        if (s?.alive) { await s.abort(); await client.sendMessage(chatId, '🛑 Aborted.'); }
         break;
       }
       case '/debug': {
         log.enabled = !log.enabled;
-        await tg.sendMessage(chatId, log.enabled ? '🐛 Debug ON' : '🐛 Debug OFF');
+        await client.sendMessage(chatId, log.enabled ? '🐛 Debug ON' : '🐛 Debug OFF');
         break;
       }
       case '/autopilot': case '/allowall': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
         const c = cfg(chatId); c.autopilot = !c.autopilot; s.autopilot = c.autopilot; setCfg(chatId, c);
-        await tg.sendMessage(chatId, c.autopilot ? '🚀 Autopilot ON' : '🔐 Autopilot OFF');
+        await client.sendMessage(chatId, c.autopilot ? '🚀 Autopilot ON' : '🔐 Autopilot OFF');
         break;
       }
       case '/agent': {
@@ -298,16 +299,16 @@ async function main(): Promise<void> {
             const agents = (r as any)?.agents ?? r;
             const lines = Array.isArray(agents) && agents.length
               ? agents.map((a: any) => '• `' + (a.name ?? a) + '`') : ['No agents found.'];
-            await tg.sendMessage(chatId, '🤖 *Agents*\n' + lines.join('\n'));
-          } catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+            await client.sendMessage(chatId, '🤖 *Agents*\n' + lines.join('\n'));
+          } catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
           break;
         }
         if (args[0] && s?.alive) {
-          try { await s.selectAgent(args[0]); await tg.sendMessage(chatId, '🤖 Agent: `' + args[0] + '`'); }
-          catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+          try { await s.selectAgent(args[0]); await client.sendMessage(chatId, '🤖 Agent: `' + args[0] + '`'); }
+          catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         } else if (args[0]) {
           const c = cfg(chatId); c.agent = args[0]; setCfg(chatId, c);
-          await tg.sendMessage(chatId, '🤖 Agent `' + args[0] + '` set for next session.');
+          await client.sendMessage(chatId, '🤖 Agent `' + args[0] + '` set for next session.');
         }
         break;
       }
@@ -317,90 +318,90 @@ async function main(): Promise<void> {
         try {
           if (args[0] === 'show') {
             const p = await s.readPlan();
-            await tg.sendMessage(chatId, (p as any)?.content ? '📋 ' + (p as any).content.slice(0, 3800) : '📋 No plan.');
+            await client.sendMessage(chatId, (p as any)?.content ? '📋 ' + (p as any).content.slice(0, 3800) : '📋 No plan.');
           } else if (args[0] === 'delete') {
-            await s.deletePlan(); await tg.sendMessage(chatId, '🗑 Plan deleted.');
+            await s.deletePlan(); await client.sendMessage(chatId, '🗑 Plan deleted.');
           } else if (argStr) {
             await s.setMode('plan'); await handlePrompt(chatId, msgId, argStr);
           } else {
             const cur = await s.getMode();
             const next = cur === 'plan' ? 'interactive' : 'plan';
             await s.setMode(next);
-            await tg.sendMessage(chatId, next === 'plan' ? '📋 Plan mode ON' : '⚡ Interactive');
+            await client.sendMessage(chatId, next === 'plan' ? '📋 Plan mode ON' : '⚡ Interactive');
           }
-        } catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+        } catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
       case '/fleet': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
-        try { const r = await s.startFleet(argStr || undefined); await tg.sendMessage(chatId, '🚀 Fleet: ' + JSON.stringify(r)); }
-        catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
+        try { const r = await s.startFleet(argStr || undefined); await client.sendMessage(chatId, '🚀 Fleet: ' + JSON.stringify(r)); }
+        catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
       case '/compact': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
-        try { const r = await s.compact(); await tg.sendMessage(chatId, '🗜️ ' + (r as any)?.tokensFreed + ' tokens freed'); }
-        catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
+        try { const r = await s.compact(); await client.sendMessage(chatId, '🗜️ ' + (r as any)?.tokensFreed + ' tokens freed'); }
+        catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
       case '/context': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
         const msgs = await s.getMessages();
         const types: Record<string, number> = {};
         for (const m of msgs) types[(m as any).type] = (types[(m as any).type] ?? 0) + 1;
         const lines = ['📊 *Context* (' + msgs.length + ' events)'];
         for (const [t, n] of Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 10)) lines.push('  `' + t + '`: ' + n);
-        await tg.sendMessage(chatId, lines.join('\n'));
+        await client.sendMessage(chatId, lines.join('\n'));
         break;
       }
       case '/usage': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
         try {
           const q = await s.getQuota();
           const snaps = (q as any)?.quotaSnapshots;
           if (Array.isArray(snaps)) {
             const lines = snaps.map((s: any) => '• ' + s.usedRequests + '/' + s.entitlementRequests + ' (' + s.remainingPercentage + '% left)');
-            await tg.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
-          } else await tg.sendMessage(chatId, '📊 ' + JSON.stringify(q).slice(0, 300));
-        } catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+            await client.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
+          } else await client.sendMessage(chatId, '📊 ' + JSON.stringify(q).slice(0, 300));
+        } catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
       case '/tools': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
         try {
           const r = await s.listTools();
           const tools = (r as any)?.tools ?? r;
           if (Array.isArray(tools) && tools.length) {
             const lines = tools.slice(0, 30).map((t: any) => '• `' + (t.name ?? t) + '`');
-            await tg.sendMessage(chatId, '🔧 *Tools* (' + tools.length + ')\n' + lines.join('\n'));
-          } else await tg.sendMessage(chatId, '🔧 No tools.');
-        } catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+            await client.sendMessage(chatId, '🔧 *Tools* (' + tools.length + ')\n' + lines.join('\n'));
+          } else await client.sendMessage(chatId, '🔧 No tools.');
+        } catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
       case '/files': {
         const s = sessions.get(chatId);
-        if (!s?.alive) { await tg.sendMessage(chatId, 'No session.'); break; }
+        if (!s?.alive) { await client.sendMessage(chatId, 'No session.'); break; }
         try {
           if (args[0] === 'read' && args[1]) {
             const content = await s.readFile(args[1]);
-            await tg.sendMessage(chatId, '📄 `' + args[1] + '`\n```\n' + content.slice(0, 3800) + '\n```');
+            await client.sendMessage(chatId, '📄 `' + args[1] + '`\n```\n' + content.slice(0, 3800) + '\n```');
           } else {
             const files = await s.listFiles();
             const lines = files.slice(0, 40).map((f: string) => '• `' + f + '`');
-            await tg.sendMessage(chatId, '📂 ' + files.length + ' files\n' + lines.join('\n'));
+            await client.sendMessage(chatId, '📂 ' + files.length + ' files\n' + lines.join('\n'));
           }
-        } catch (e) { await tg.sendMessage(chatId, '❌ ' + e); }
+        } catch (e) { await client.sendMessage(chatId, '❌ ' + e); }
         break;
       }
-      case '/resume': { await tg.sendMessage(chatId, '🔄 Not yet implemented. Use `/new`.'); break; }
+      case '/resume': { await client.sendMessage(chatId, '🔄 Not yet implemented. Use `/new`.'); break; }
       case '/config': { await sendConfigMenu(chatId); break; }
       case '/help': default: {
-        await tg.sendMessage(chatId, [
+        await client.sendMessage(chatId, [
           '⚡ *Copilot Remote*',
           '', '`/new` `/stop` `/cd` `/status`',
           '`/plan` `/autopilot` `/fleet`',
@@ -425,7 +426,7 @@ async function main(): Promise<void> {
       [{ text: t(c.autopilot) + ' Autopilot', data: 'cfg:autopilot' }],
       [{ text: '🤖 Change Model', data: 'cfg:modelPicker' }],
     ];
-    editId ? await tg.editMessageButtons(chatId, editId, text, buttons) : await tg.sendMessageWithButtons(chatId, text, buttons);
+    editId ? await client.editButtons(chatId, editId, text, buttons) : await client.sendButtons(chatId, text, buttons);
   }
 
   async function sendModelPicker(chatId: string, editId: number) {
@@ -440,19 +441,19 @@ async function main(): Promise<void> {
       buttons.push(models.slice(i, i + 2).map(m => ({ text: (m === c.model ? '● ' : '') + m, data: 'model:' + m })));
     }
     buttons.push([{ text: '← Back', data: 'cfg:back' }]);
-    await tg.editMessageButtons(chatId, editId, '🤖 *Select Model*', buttons);
+    await client.editButtons(chatId, editId, '🤖 *Select Model*', buttons);
   }
 
   // ── Callbacks ──
-  tg.setReactionHandler(async (emoji, chatId, msgId) => {
+  client.onReaction = async (emoji, chatId, msgId) => {
     if (!pendingPerms.has(msgId)) return;
     const s = sessions.get(chatId);
     if (!s?.alive) return;
-    if (emoji === '👍' || emoji === '✅') { s.approve(); pendingPerms.delete(msgId); await tg.editMessageButtons(chatId, msgId, '✅ Approved', []); }
-    else if (emoji === '👎' || emoji === '❌') { s.deny(); pendingPerms.delete(msgId); await tg.editMessageButtons(chatId, msgId, '❌ Denied', []); }
-  });
+    if (emoji === '👍' || emoji === '✅') { s.approve(); pendingPerms.delete(msgId); await client.editButtons(chatId, msgId, '✅ Approved', []); }
+    else if (emoji === '👎' || emoji === '❌') { s.deny(); pendingPerms.delete(msgId); await client.editButtons(chatId, msgId, '❌ Denied', []); }
+  };
 
-  tg.setCallbackHandler(async (_, data, chatId, msgId) => {
+  client.onCallback = async (_, data, chatId, msgId) => {
     if (data.startsWith('perm:')) {
       const s = sessions.get(chatId);
       if (!s?.alive) return;
@@ -460,13 +461,13 @@ async function main(): Promise<void> {
         s.autopilot = true;
         const c = cfg(chatId); c.autopilot = true; setCfg(chatId, c);
         s.approve();
-        for (const [id, cid] of pendingPerms) { if (cid === chatId) { s.approve(); pendingPerms.delete(id); if (id !== msgId) tg.editMessageButtons(chatId, id, '🚀', []).catch(() => {}); } }
-        await tg.editMessageButtons(chatId, msgId, '🚀 Autopilot ON', []);
+        for (const [id, cid] of pendingPerms) { if (cid === chatId) { s.approve(); pendingPerms.delete(id); if (id !== msgId) client.editButtons(chatId, id, '🚀', []).catch(() => {}); } }
+        await client.editButtons(chatId, msgId, '🚀 Autopilot ON', []);
       } else {
         const ok = data === 'perm:yes';
         ok ? s.approve() : s.deny();
         pendingPerms.delete(msgId);
-        await tg.editMessageButtons(chatId, msgId, ok ? '✅' : '❌', []);
+        await client.editButtons(chatId, msgId, ok ? '✅' : '❌', []);
       }
       return;
     }
@@ -486,14 +487,14 @@ async function main(): Promise<void> {
         return sendConfigMenu(chatId, msgId);
       }
     }
-  });
+  };
 
   // ── Shutdown ──
-  const shutdown = () => { tg.stopPolling(); for (const [, s] of sessions) s.kill(); process.exit(0); };
+  const shutdown = () => { client.stop(); for (const [, s] of sessions) s.kill(); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  await tg.startPolling();
+  await client.start();
 }
 
 main().catch(e => { log.error('Fatal:', e); process.exit(1); });
