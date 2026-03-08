@@ -12,6 +12,7 @@ import type {
   ToolInfo,
   ToolsListResponse,
   SessionMessage,
+  FileAttachment,
 } from './session.js';
 import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
@@ -125,7 +126,7 @@ function resolveGhToken(): string | undefined {
 const PROMPT_COMMANDS: Record<string, { usage?: string; prompt: (args: string) => string }> = {
   '/research': {
     usage: '`/research <topic>`',
-    prompt: (a) => 'Research this topic thoroughly using web search and GitHub: ' + a,
+    prompt: (a) => a, // agent selection handles research mode
   },
   '/diff': { prompt: () => 'Review all uncommitted changes. Show a summary and any issues.' },
   '/review': { prompt: () => 'Thorough code review of recent changes. Check bugs, security, style.' },
@@ -336,7 +337,7 @@ async function main(): Promise<void> {
   }
 
   // ── Prompt handler (streaming + reactions) ──
-  async function handlePrompt(chatId: string, msgId: number, prompt: string): Promise<void> {
+  async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
     let session: Session;
     try {
       session = await getSession(chatId);
@@ -359,6 +360,19 @@ async function main(): Promise<void> {
       }
     }
     const c = cfg(chatId);
+    // Steering: if session is busy (mid-turn), send as immediate to steer the agent
+    if (session.busy && c.messageMode !== 'enqueue') {
+      const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
+      await react('⚡');
+      try {
+        await session.sendImmediate(prompt, attachments);
+        await react('✅');
+      } catch (e) {
+        await react('❌');
+        log.debug('Immediate send failed:', e);
+      }
+      return;
+    }
     const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
     await react('🤔');
     await client.sendTyping(chatId);
@@ -569,7 +583,7 @@ async function main(): Promise<void> {
 
     let res: { content: string };
     try {
-      res = await session.send(prompt);
+      res = await session.send(prompt, attachments);
     } catch (sendErr) {
       cleanup();
       clearInterval(typingInterval);
@@ -672,9 +686,17 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, 'Usage: ' + pc.usage);
         return;
       }
-      const s = sessions.get(chatId);
+      let s = sessions.get(chatId);
       if (!s?.alive) {
-        await getSession(chatId);
+        s = await getSession(chatId);
+      }
+      // For /research, activate the research agent before sending the prompt
+      if (cmd === '/research' && s?.alive) {
+        try {
+          await s.selectAgent('research');
+        } catch (e) {
+          log.debug('Failed to select research agent:', e);
+        }
       }
       return handlePrompt(chatId, msgId, pc.prompt(argStr));
     }
@@ -823,16 +845,54 @@ async function main(): Promise<void> {
       }
       case '/agent': {
         const s = sessions.get(chatId);
-        if (!args[0] && s?.alive) {
-          try {
-            const r = await s.listAgents();
-            const agents = r?.agents ?? [];
-            const lines = agents.length
-              ? agents.map((a: AgentInfo) => '• `' + (a.name ?? a) + '`')
-              : ['No agents found.'];
-            await client.sendMessage(chatId, '🤖 *Agents*\n' + lines.join('\n'));
-          } catch (e) {
-            await client.sendMessage(chatId, '❌ ' + e);
+        if (!args[0]) {
+          // List available agents with buttons
+          if (s?.alive) {
+            try {
+              const r = await s.listAgents();
+              const agents = r?.agents ?? [];
+              const agentPfx = (d: string) => `@${chatId}|${d}`;
+              // Also show current agent
+              let currentName = '';
+              try {
+                const cur = await s.getCurrentAgent();
+                currentName = cur?.agent?.name ?? '';
+              } catch { /* ignore */ }
+              if (!agents.length) {
+                await client.sendMessage(chatId, '🤖 No agents found.');
+                break;
+              }
+              const buttons: Button[][] = [];
+              for (let i = 0; i < agents.length; i += 2) {
+                const row: Button[] = [];
+                for (let j = i; j < Math.min(i + 2, agents.length); j++) {
+                  const a = agents[j];
+                  const name = a.name ?? String(a);
+                  const label = name === currentName ? '✅ ' + name : name;
+                  row.push({ text: label, data: agentPfx('agent:' + name) });
+                }
+                buttons.push(row);
+              }
+              if (currentName) {
+                buttons.push([{ text: '❌ Deselect agent', data: agentPfx('agent:__deselect__') }]);
+              }
+              await client.sendButtons(chatId, '🤖 *Agents*' + (currentName ? ' (current: `' + currentName + '`)' : ''), buttons);
+            } catch (e) {
+              await client.sendMessage(chatId, '❌ ' + e);
+            }
+          } else {
+            // No active session — show configured custom agents from config
+            const g = configStore.raw();
+            const custom = g.customAgents ?? [];
+            if (custom.length) {
+              const lines = custom.map((a: unknown) => {
+                const agent = a as { name?: string };
+                return '• `' + (agent.name ?? String(a)) + '`';
+              });
+              await client.sendMessage(chatId, '🤖 *Custom Agents*\n' + lines.join('\n') + '\n\nStart a session first to list all agents.');
+            } else {
+              await client.sendMessage(chatId, '🤖 No agents configured. Start a session first to list available agents.');
+            }
           }
           break;
         }
@@ -1327,6 +1387,17 @@ async function main(): Promise<void> {
         }
       }
 
+      // Check if it's an image file — use SDK attachments for vision support
+      const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const isImage = imageExts.some((ext) => fileName.toLowerCase().endsWith(ext));
+
+      if (isImage) {
+        const prompt = caption || 'Describe this image.';
+        const attachments: FileAttachment[] = [{ type: 'file' as const, path: tmpPath }];
+        await handlePrompt(chatId, msgId, prompt, attachments);
+        return;
+      }
+
       const prompt = caption
         ? caption + '\n\n[Attached file: ' + tmpPath + ']'
         : 'I sent you a file: ' + tmpPath + '\nPlease read and analyze it.';
@@ -1450,6 +1521,27 @@ async function main(): Promise<void> {
       const s = sessions.get(chatId);
       if (s?.alive) s.answerInput(answer);
       await client.editButtons(chatId, msgId, '❓ → ' + answer, []);
+      return;
+    }
+    // Agent selection from /agent button menu
+    if (data.startsWith('agent:')) {
+      const agentName = data.slice(6);
+      const s = sessions.get(chatId);
+      if (!s?.alive) {
+        await client.editButtons(chatId, msgId, '❌ No active session.', []);
+        return;
+      }
+      try {
+        if (agentName === '__deselect__') {
+          await s.deselectAgent();
+          await client.editButtons(chatId, msgId, '🤖 Agent deselected.', []);
+        } else {
+          await s.selectAgent(agentName);
+          await client.editButtons(chatId, msgId, '🤖 Agent: `' + agentName + '`', []);
+        }
+      } catch (e) {
+        await client.editButtons(chatId, msgId, '❌ ' + e, []);
+      }
       return;
     }
     if (data === 'cfg:reasoning') return sendReasoningMenu(chatId, msgId);
