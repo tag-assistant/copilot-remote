@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     showTools: boolean;
     allowAllTools: boolean;
     model: string;
+    agent: string | null;
   }
   const defaultConfig: ChatConfig = {
     showUsage: false,
@@ -86,12 +87,12 @@ async function main(): Promise<void> {
     showTools: false,
     allowAllTools: false,
     model: 'claude-sonnet-4',
+    agent: null,
   };
 
-  const MODELS = [
-    'claude-sonnet-4', 'claude-sonnet-4.6', 'claude-opus-4.6',
-    'gemini-3-pro-preview', 'gpt-5.2', 'gpt-5.4',
-  ];
+  // Models loaded dynamically from SDK
+  let cachedModels: string[] = [];
+
   const chatConfigs = new Map<string, ChatConfig>();
   const getConfig = (chatId: string): ChatConfig => {
     return chatConfigs.get(chatId) ?? { ...defaultConfig };
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
       const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
 
       try {
-        await session.start({ cwd: workDir, binary: copilotBin });
+        const cfg = getConfig(chatId); await session.start({ cwd: workDir, binary: copilotBin, model: cfg.model, allowAllTools: cfg.allowAllTools, agent: cfg.agent ?? undefined });
         session.allowAllTools = getConfig(chatId).allowAllTools;
         session.model = getConfig(chatId).model;
         sessions.set(chatId, session);
@@ -345,7 +346,7 @@ async function main(): Promise<void> {
 
         const session = new Session();
         try {
-          await session.start({ cwd: workDir, binary: copilotBin });
+          const cfg = getConfig(chatId); await session.start({ cwd: workDir, binary: copilotBin, model: cfg.model, allowAllTools: cfg.allowAllTools, agent: cfg.agent ?? undefined });
           sessions.set(chatId, session);
           await telegram.sendMessage(chatId, '✅ Ready in `' + workDir + '`\n\nSend a prompt to get started.');
         } catch (err) {
@@ -374,7 +375,7 @@ async function main(): Promise<void> {
         const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
         const newSession = new Session();
         try {
-          await newSession.start({ cwd: workDir, binary: copilotBin });
+          const ncfg = getConfig(chatId); await newSession.start({ cwd: workDir, binary: copilotBin, model: ncfg.model, allowAllTools: ncfg.allowAllTools, agent: ncfg.agent ?? undefined });
           sessions.set(chatId, newSession);
           await telegram.sendMessage(chatId, '🆕 New session started. Previous conversation cleared.');
         } catch (err) {
@@ -440,6 +441,53 @@ async function main(): Promise<void> {
         break;
       }
 
+      case '/abort': {
+        const session = sessions.get(chatId);
+        if (session?.alive) {
+          await session.abort();
+          await telegram.sendMessage(chatId, '🛑 Request aborted.');
+        } else {
+          await telegram.sendMessage(chatId, 'No active session.');
+        }
+        break;
+      }
+
+      case '/models': {
+        const session = sessions.get(chatId);
+        if (!session?.alive) {
+          await telegram.sendMessage(chatId, 'Start a session first to list models.');
+          break;
+        }
+        try {
+          const models = await session.listModels();
+          cachedModels = models.map(m => (m as any).id ?? (m as any).name ?? String(m)).filter(Boolean);
+          const cfg = getConfig(chatId);
+          const lines = cachedModels.map(m => (m === cfg.model ? '● ' : '  ') + '`' + m + '`');
+          await telegram.sendMessage(chatId, '🤖 *Available Models* (' + cachedModels.length + ')\n\n' + lines.join('\n'));
+        } catch (err) {
+          await telegram.sendMessage(chatId, '❌ ' + String(err));
+        }
+        break;
+      }
+
+      case '/agent': {
+        const agentName = args[0] || null;
+        const cfg = getConfig(chatId);
+        cfg.agent = agentName;
+        setConfig(chatId, cfg);
+
+        if (agentName) {
+          // Restart session with the agent
+          const session = sessions.get(chatId);
+          if (session?.alive) await session.kill();
+          sessions.delete(chatId);
+          await telegram.sendMessage(chatId, '🤖 Agent set to `' + agentName + '`. Next message will start a new session.');
+        } else {
+          await telegram.sendMessage(chatId, '🤖 Agent cleared. Using default Copilot.');
+        }
+        break;
+      }
+
       case '/config': {
         await sendConfigMenu(chatId);
         break;
@@ -448,19 +496,27 @@ async function main(): Promise<void> {
       case '/help':
       default:
         await telegram.sendMessage(chatId, [
-          '⚡ *Copilot Remote v0.2.0*',
+          '⚡ *Copilot Remote v0.5.0*',
           '',
+          '*Session*',
           '`/start [dir]` — Start in directory',
           '`/stop` — Kill session',
-          '`/new` — Fresh session (clear history)',
+          '`/new` — Fresh session',
           '`/cd [dir]` — Change working directory',
-          '`/status` — Session status + ID',
+          '`/status` — Session info',
+          '',
+          '*Tools*',
           '`/yes` `/y` — Approve tool action',
           '`/no` `/n` — Deny tool action',
-          '`/help` — This message',
+          '`/abort` — Cancel current request',
+          '',
+          '*Customization*',
+          '`/config` — Settings (model, tools, display)',
+          '`/models` — List available models',
+          '`/agent [name]` — Switch custom agent',
           '',
           'Or just type a prompt — session auto-starts.',
-          'Conversation context persists via `--resume`.',
+          'Supports custom instructions, agents, skills, MCP servers.',
         ].join('\n'));
         break;
     }
@@ -491,11 +547,29 @@ async function main(): Promise<void> {
 
   async function sendModelPicker(chatId: string, editMsgId: number): Promise<void> {
     const cfg = getConfig(chatId);
-    const text = '🤖 *Select Model*';
-    // 2 per row
+    const session = sessions.get(chatId);
+
+    // Fetch live models from SDK
+    if (cachedModels.length === 0 && session?.alive) {
+      try {
+        const models = await session.listModels();
+        cachedModels = models.map(m => m.id ?? m.name ?? String(m)).filter(Boolean);
+        console.log('[SDK] Loaded ' + cachedModels.length + ' models');
+      } catch (err) {
+        console.error('[SDK] Failed to list models:', err);
+      }
+    }
+
+    // Fallback if no models loaded
+    const modelList = cachedModels.length > 0 ? cachedModels : [
+      'claude-sonnet-4', 'claude-sonnet-4.6', 'claude-opus-4.6',
+      'gemini-3-pro-preview', 'gpt-5.2', 'gpt-5.4',
+    ];
+
+    const text = '🤖 *Select Model* (' + modelList.length + ' available)';
     const buttons: { text: string; data: string }[][] = [];
-    for (let i = 0; i < MODELS.length; i += 2) {
-      const row = MODELS.slice(i, i + 2).map(m => ({
+    for (let i = 0; i < modelList.length; i += 2) {
+      const row = modelList.slice(i, i + 2).map(m => ({
         text: (m === cfg.model ? '● ' : '') + m,
         data: 'model:' + m,
       }));
@@ -521,10 +595,11 @@ async function main(): Promise<void> {
       const cfg = getConfig(chatId);
       cfg.model = model;
       setConfig(chatId, cfg);
-      // Sync to active session
+      // Use SDK's setModel for runtime switch
       const session = sessions.get(chatId);
-      if (session?.alive) session.model = model;
-      // Go back to config menu
+      if (session?.alive) {
+        try { await session.setModel(model); } catch {}
+      }
       await sendConfigMenu(chatId, msgId);
       return;
     }
