@@ -485,8 +485,17 @@ export class TelegramClient implements Client {
 
   // ── Bot profile ──
 
+  private profilePhotoSet = false;
+
   async setMyProfilePhoto(pathOrUrl: string): Promise<void> {
+    if (this.profilePhotoSet) return;
     try {
+      // Check if photo is already set
+      const me = await this.bot.api.raw.getUserProfilePhotos({ user_id: this.bot.botInfo.id, limit: 1 });
+      if (me.total_count > 0) {
+        this.profilePhotoSet = true;
+        return;
+      }
       let buffer: Buffer;
       if (pathOrUrl.startsWith('http')) {
         const res = await fetch(pathOrUrl);
@@ -496,6 +505,7 @@ export class TelegramClient implements Client {
         buffer = fs.readFileSync(pathOrUrl);
       }
       await this.bot.api.raw.setMyProfilePhoto({ photo: { type: 'static', photo: new InputFile(buffer, 'avatar.jpg') } });
+      this.profilePhotoSet = true;
     } catch (e) {
       log.debug('setMyProfilePhoto failed:', e);
     }
