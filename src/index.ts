@@ -918,8 +918,8 @@ async function main(): Promise<void> {
             }
           }
           // Add context info if available
-          const ci = contextInfo;
-          if (ci) lines.push(ci.replace(/[`]/g, ''));
+          const ci = contextInfoMap.get(chatId);
+          if (ci) lines.push(ci);
 
           if (lines.length) {
             await client.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
@@ -1433,7 +1433,7 @@ async function main(): Promise<void> {
       await client.editButtons(
         chatId, msgId,
         '📊 *Usage*\n' + (lines.length ? lines.join('\n') : 'No data yet — send a message first.'),
-        [[{ text: '← Back', data: pfx('cfg:back') }]],
+        [[{ text: '← Back', data: `@${chatId}|cfg:back` }]],
       );
       return;
     }
