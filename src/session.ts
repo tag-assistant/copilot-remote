@@ -18,7 +18,7 @@ import {
 } from '@github/copilot-sdk';
 import { EventEmitter } from 'events';
 
-export type PermissionMode = 'smart' | 'ask-all' | 'allow-all';
+export type PermissionMode = 'smart' | 'ask-all' | 'allow-all' | 'autopilot';
 
 export interface SessionOptions {
   cwd: string;
@@ -100,7 +100,7 @@ export class Session extends EventEmitter {
     const config: SessionConfig = {
       clientName: 'copilot-remote',
       workingDirectory: this.cwd,
-      onPermissionRequest: this._permissionMode === 'allow-all'
+      onPermissionRequest: (this._permissionMode === 'allow-all' || this._permissionMode === 'autopilot')
         ? approveAll
         : (req: PermissionRequest) => this.handlePermission(req),
     };

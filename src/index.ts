@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     showThinking: boolean;
     showTools: boolean;
     showReactions: boolean;
-    permissionMode: 'smart' | 'ask-all' | 'allow-all';
+    permissionMode: 'smart' | 'ask-all' | 'allow-all' | 'autopilot';
     model: string;
     agent: string | null;
   }
@@ -533,19 +533,31 @@ async function main(): Promise<void> {
       case '/allowall': {
         const cfg = getConfig(chatId);
         // Cycle: smart → allow-all → ask-all → smart
-        const cycle: Record<string, 'smart' | 'ask-all' | 'allow-all'> = {
-          'smart': 'allow-all', 'allow-all': 'ask-all', 'ask-all': 'smart',
+        const cycle: Record<string, 'smart' | 'ask-all' | 'allow-all' | 'autopilot'> = {
+          'smart': 'allow-all', 'allow-all': 'autopilot', 'autopilot': 'ask-all', 'ask-all': 'smart',
         };
         cfg.permissionMode = cycle[cfg.permissionMode] ?? 'smart';
         setConfig(chatId, cfg);
         const session = sessions.get(chatId);
-        if (session?.alive) session.permissionMode = cfg.permissionMode;
+        if (session?.alive) {
+          session.permissionMode = cfg.permissionMode;
+          // Sync Copilot engine mode for autopilot
+          try {
+            if (cfg.permissionMode === 'autopilot') {
+              await session.setMode('autopilot');
+            } else {
+              const currentMode = await session.getMode();
+              if (currentMode === 'autopilot') await session.setMode('interactive');
+            }
+          } catch {}
+        }
         const labels: Record<string, string> = {
           'smart': '🧠 Smart — auto-approve reads, prompt for writes',
-          'allow-all': '✅ Allow All — no prompts',
+          'allow-all': '✅ Allow All — approve all at SDK level',
+          'autopilot': '🚀 Autopilot — Copilot engine auto-executes everything',
           'ask-all': '🔐 Ask All — prompt for everything',
         };
-        await telegram.sendMessage(chatId, labels[cfg.permissionMode]);
+        await telegram.sendMessage(chatId, labels[cfg.permissionMode] ?? cfg.permissionMode);
         break;
       }
 
@@ -661,9 +673,19 @@ async function main(): Promise<void> {
         if (!session?.alive) { await telegram.sendMessage(chatId, 'No active session.'); break; }
         try {
           const current = await session.getMode();
-          const next = current === 'autopilot' ? 'interactive' : 'autopilot';
-          await session.setMode(next);
-          await telegram.sendMessage(chatId, next === 'autopilot' ? '🤖 Autopilot ON — Copilot will act without asking' : '⚡ Interactive mode');
+          const cfg = getConfig(chatId);
+          if (current === 'autopilot') {
+            await session.setMode('interactive');
+            cfg.permissionMode = 'smart';
+            session.permissionMode = 'smart';
+            await telegram.sendMessage(chatId, '🧠 Smart mode — reads auto-approved, writes prompt');
+          } else {
+            await session.setMode('autopilot');
+            cfg.permissionMode = 'autopilot';
+            session.permissionMode = 'autopilot';
+            await telegram.sendMessage(chatId, '🚀 Autopilot — Copilot auto-executes everything');
+          }
+          setConfig(chatId, cfg);
         } catch (err) { await telegram.sendMessage(chatId, '❌ ' + String(err)); }
         break;
       }
@@ -877,7 +899,7 @@ async function main(): Promise<void> {
   async function sendConfigMenu(chatId: string, editMsgId?: number): Promise<void> {
     const cfg = getConfig(chatId);
     const toggle = (v: boolean) => v ? '✅' : '⬜';
-    const permLabels: Record<string, string> = { 'smart': '🧠 Smart', 'allow-all': '✅ Allow All', 'ask-all': '🔐 Ask All' };
+    const permLabels: Record<string, string> = { 'smart': '🧠 Smart', 'allow-all': '✅ Allow All', 'autopilot': '🚀 Autopilot', 'ask-all': '🔐 Ask All' };
     const agentLine = cfg.agent ? '\nAgent: `' + cfg.agent + '`' : '';
     const permLine = '\nPermissions: ' + permLabels[cfg.permissionMode];
     const text = '⚙️ *Settings*\nModel: `' + cfg.model + '`' + agentLine + permLine;
@@ -961,14 +983,15 @@ async function main(): Promise<void> {
       if (!session?.alive) return;
       
       if (data === 'perm:all') {
-        // Switch to allow-all for remainder of session
-        session.permissionMode = 'allow-all';
+        // Switch to autopilot for remainder of session
+        session.permissionMode = 'autopilot';
         const cfg = getConfig(chatId);
-        cfg.permissionMode = 'allow-all';
+        cfg.permissionMode = 'autopilot';
         setConfig(chatId, cfg);
+        try { await session.setMode('autopilot'); } catch {}
         session.approve();
         pendingPermissions.delete(msgId);
-        await telegram.editMessageButtons(chatId, msgId, '✅ Approved — all tools allowed for this session', []);
+        await telegram.editMessageButtons(chatId, msgId, '🚀 Autopilot enabled for this session', []);
       } else {
         const approved = data === 'perm:yes';
         if (approved) session.approve(); else session.deny();
@@ -1005,13 +1028,23 @@ async function main(): Promise<void> {
 
     if (data === 'cfg:permissionMode') {
       const cfg = getConfig(chatId);
-      const cycle: Record<string, 'smart' | 'ask-all' | 'allow-all'> = {
-        'smart': 'allow-all', 'allow-all': 'ask-all', 'ask-all': 'smart',
+      const cycle: Record<string, 'smart' | 'ask-all' | 'allow-all' | 'autopilot'> = {
+        'smart': 'allow-all', 'allow-all': 'autopilot', 'autopilot': 'ask-all', 'ask-all': 'smart',
       };
       cfg.permissionMode = cycle[cfg.permissionMode] ?? 'smart';
       setConfig(chatId, cfg);
       const session = sessions.get(chatId);
-      if (session?.alive) session.permissionMode = cfg.permissionMode;
+      if (session?.alive) {
+        session.permissionMode = cfg.permissionMode;
+        try {
+          if (cfg.permissionMode === 'autopilot') {
+            await session.setMode('autopilot');
+          } else {
+            const currentMode = await session.getMode();
+            if (currentMode === 'autopilot') await session.setMode('interactive');
+          }
+        } catch {}
+      }
       await sendConfigMenu(chatId, msgId);
       return;
     }
