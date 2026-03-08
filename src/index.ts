@@ -17,7 +17,7 @@ import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
 import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
-import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
+import { ConfigStore, type ChatConfig, type PermKind, type GlobalConfig } from './config-store.js';
 import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -261,16 +261,27 @@ async function main(): Promise<void> {
 
     s = new Session();
     const c = cfg(chatId);
+    const globalCfg = configStore.raw();
     const opts = {
       cwd: workDir(chatId),
       binary: bin,
       model: c.model,
       autopilot: c.autopilot,
-      reasoningEffort:
-        c.reasoningEffort ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
+      reasoningEffort: c.reasoningEffort ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
       agent: c.agent ?? undefined,
       topicContext: client.getTopicName?.(chatId),
       githubToken: config.githubToken,
+      infiniteSessions: c.infiniteSessions,
+      messageMode: c.messageMode || undefined,
+      // Global config passthrough
+      provider: globalCfg.provider,
+      mcpServers: globalCfg.mcpServers,
+      customAgents: globalCfg.customAgents,
+      skillDirectories: globalCfg.skillDirectories,
+      disabledSkills: globalCfg.disabledSkills,
+      systemInstructions: globalCfg.systemInstructions,
+      availableTools: globalCfg.availableTools,
+      excludedTools: globalCfg.excludedTools,
     };
 
     // Try to resume a saved session
@@ -942,6 +953,7 @@ async function main(): Promise<void> {
 
     // Get current mode from config (not session — session may be killed during mode switch)
     const mode = c.mode ?? 'interactive';
+    const globalCfg = configStore.raw();
 
     const MODE_STYLES: Record<string, string> = {
       interactive: 'primary',
@@ -963,11 +975,21 @@ async function main(): Promise<void> {
       c.model +
       '`\nMode: ' +
       (MODE_LABELS[mode] ?? mode) +
-      (c.agent ? '\nAgent: `' + c.agent + '`' : '');
+      (c.agent ? '\nAgent: `' + c.agent + '`' : '') +
+      (globalCfg.provider ? '\nProvider: Custom (' + globalCfg.provider.baseUrl + ')' : '') +
+      (globalCfg.mcpServers ? '\nMCP: ' + Object.keys(globalCfg.mcpServers).length + ' servers' : '');
     const buttons = [
       [modeBtn('interactive'), modeBtn('plan'), modeBtn('autopilot')],
       [{ text: '🤖 Change Model', data: pfx('cfg:modelPicker') }],
       [{ text: '🧠 Reasoning: ' + (c.reasoningEffort || 'Default'), data: pfx('cfg:reasoning') }],
+      [{ text: '📨 Messages: ' + (c.messageMode || 'Default'), data: pfx('cfg:messageMode') }],
+      [
+        {
+          text:
+            '🔧 Tools' + (globalCfg.excludedTools?.length ? ': ' + globalCfg.excludedTools.length + ' excluded' : ''),
+          data: pfx('cfg:tools-info'),
+        },
+      ],
       [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
       [{ text: '🎨 Display', data: pfx('cfg:display') }],
     ];
@@ -1003,7 +1025,11 @@ async function main(): Promise<void> {
     const allLabels: Record<string, string> = { '': 'Default', ...labels };
     const current = c.reasoningEffort || '';
     const buttons = levels.map((l) => [
-      { text: allLabels[l] ?? l, data: pfx('reason:' + (l || 'default')), ...(l === current ? { style: 'success' } : {}) },
+      {
+        text: allLabels[l] ?? l,
+        data: pfx('reason:' + (l || 'default')),
+        ...(l === current ? { style: 'success' } : {}),
+      },
     ]);
     const defaultNote = modelInfo?.defaultReasoningEffort ? ` (default: ${modelInfo.defaultReasoningEffort})` : '';
     buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
@@ -1019,17 +1045,17 @@ async function main(): Promise<void> {
     const c = cfg(chatId);
     const pfx = (d: string) => `@${chatId}|${d}`;
     const toggle = (on: boolean, label: string, data: string) => ({
-      text: label, data, ...(on ? { style: 'success' } : {}),
+      text: label,
+      data,
+      ...(on ? { style: 'success' } : {}),
     });
     const buttons = [
-      [
-        toggle(c.showThinking, 'Thinking', pfx('dsp:showThinking')),
-        toggle(c.showTools, 'Tools', pfx('dsp:showTools')),
-      ],
+      [toggle(c.showThinking, 'Thinking', pfx('dsp:showThinking')), toggle(c.showTools, 'Tools', pfx('dsp:showTools'))],
       [
         toggle(c.showUsage, 'Usage', pfx('dsp:showUsage')),
         toggle(c.showReactions, 'Reactions', pfx('dsp:showReactions')),
       ],
+      [toggle(c.infiniteSessions !== false, 'Infinite Sessions', pfx('dsp:infiniteSessions'))],
       [{ text: '← Back', data: pfx('cfg:back') }],
     ];
     await client.editButtons(chatId, editId, '🎨 *Display*\nToggle what shows in responses:', buttons);
@@ -1044,11 +1070,13 @@ async function main(): Promise<void> {
       buttons.push([{ text: label, data: pfx('sec:' + kind), ...(on ? { style: 'success' } : {}) }]);
     }
     const allOn = Object.values(c.autoApprove).every(Boolean);
-    buttons.push([{
-      text: allOn ? 'Revoke All' : 'Approve All',
-      data: pfx('sec:toggle-all'),
-      ...(allOn ? { style: 'danger' } : { style: 'success' }),
-    }]);
+    buttons.push([
+      {
+        text: allOn ? 'Revoke All' : 'Approve All',
+        data: pfx('sec:toggle-all'),
+        ...(allOn ? { style: 'danger' } : { style: 'success' }),
+      },
+    ]);
     buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
     await client.editButtons(chatId, editId, '🔒 *Tool Security*\nAuto-approve by type:', buttons);
   }
@@ -1248,6 +1276,24 @@ async function main(): Promise<void> {
     if (data === 'cfg:security') return sendSecurityMenu(chatId, msgId);
     if (data === 'cfg:modelPicker') return sendModelPicker(chatId, msgId);
     if (data === 'cfg:back') return sendConfigMenu(chatId, msgId);
+    if (data === 'cfg:messageMode') {
+      const c = cfg(chatId);
+      const cycle: Array<'' | 'enqueue' | 'immediate'> = ['', 'enqueue', 'immediate'];
+      const idx = cycle.indexOf(c.messageMode || '');
+      c.messageMode = cycle[(idx + 1) % cycle.length];
+      setCfg(chatId, c);
+      // Update session if alive
+      const s = sessions.get(chatId);
+      if (s?.alive) s.messageMode = c.messageMode || undefined;
+      return sendConfigMenu(chatId, msgId);
+    }
+    if (data === 'cfg:tools-info') {
+      await client.sendMessage(
+        chatId,
+        'Edit `~/.copilot-remote/config.json` to configure:\n• `excludedTools`: \\[...\\]\n• `availableTools`: \\[...\\]',
+      );
+      return;
+    }
     if (data.startsWith('model:')) {
       const c = cfg(chatId);
       c.model = data.slice(6);
@@ -1264,6 +1310,11 @@ async function main(): Promise<void> {
     if (data.startsWith('dsp:')) {
       const key = data.slice(4) as keyof ChatConfig;
       const c = cfg(chatId);
+      if (key === 'infiniteSessions') {
+        c.infiniteSessions = c.infiniteSessions === false ? undefined : false;
+        setCfg(chatId, c);
+        return sendDisplayMenu(chatId, msgId);
+      }
       const rec = c as unknown as Record<string, unknown>;
       if (key in c && typeof rec[key] === 'boolean') {
         rec[key] = !rec[key];

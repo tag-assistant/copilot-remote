@@ -106,6 +106,17 @@ export interface SessionOptions {
   reasoningEffort?: ReasoningEffort;
   topicContext?: string;
   githubToken?: string;
+  infiniteSessions?: boolean;
+  messageMode?: 'enqueue' | 'immediate';
+  // Global config passthrough
+  provider?: { type?: 'openai' | 'azure' | 'anthropic'; baseUrl: string; apiKey?: string; model?: string };
+  mcpServers?: Record<string, unknown>;
+  customAgents?: unknown[];
+  skillDirectories?: string[];
+  disabledSkills?: string[];
+  systemInstructions?: string;
+  availableTools?: string[];
+  excludedTools?: string[];
 }
 
 export interface CopilotMessage {
@@ -119,6 +130,7 @@ export class Session extends EventEmitter {
   private _alive = false;
   private _busy = false;
   private _autopilot = false;
+  private _messageMode: 'enqueue' | 'immediate' | undefined = undefined;
   private cwd = '';
 
   // Message queue for sequential processing
@@ -140,29 +152,41 @@ export class Session extends EventEmitter {
   set autopilot(v: boolean) {
     this._autopilot = v;
   }
+  get messageMode() {
+    return this._messageMode;
+  }
+  set messageMode(v: 'enqueue' | 'immediate' | undefined) {
+    this._messageMode = v;
+  }
 
   private buildConfig(opts: SessionOptions): Partial<SessionConfig> {
+    const systemLines = [
+      'You are being accessed via a Telegram bot bridge called copilot-remote.',
+      'The user is chatting with you from their phone. Keep responses concise but complete.',
+      'You have full access to the filesystem, shell, and all tools. Use them proactively.',
+      "When asked to do something, do it — don't just explain how.",
+      'Show your work: mention files you read, commands you ran, changes you made.',
+      'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
+      ...(opts.topicContext
+        ? ['This conversation topic is: "' + opts.topicContext + '". Stay focused on this subject.']
+        : []),
+    ];
+    if (opts.systemInstructions) systemLines.push(opts.systemInstructions);
+
     return {
       clientName: 'copilot-remote',
       streaming: true,
       workingDirectory: this.cwd,
       systemMessage: {
         mode: 'append',
-        content: [
-          'You are being accessed via a Telegram bot bridge called copilot-remote.',
-          'The user is chatting with you from their phone. Keep responses concise but complete.',
-          'You have full access to the filesystem, shell, and all tools. Use them proactively.',
-          "When asked to do something, do it — don't just explain how.",
-          'Show your work: mention files you read, commands you ran, changes you made.',
-          'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
-          ...(opts.topicContext
-            ? ['This conversation topic is: "' + opts.topicContext + '". Stay focused on this subject.']
-            : []),
-        ].join('\n'),
+        content: systemLines.join('\n'),
       },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
       onUserInputRequest: (req: UserInputRequest) => this.handleUserInput(req),
-      infiniteSessions: { enabled: true, backgroundCompactionThreshold: 0.8, bufferExhaustionThreshold: 0.95 },
+      infiniteSessions:
+        opts.infiniteSessions === false
+          ? { enabled: false }
+          : { enabled: true, backgroundCompactionThreshold: 0.8, bufferExhaustionThreshold: 0.95 },
       tools: createTelegramTools({
         sendNotification: async (text: string) => {
           this.emit('notification', text);
@@ -170,12 +194,20 @@ export class Session extends EventEmitter {
       }),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(opts.provider ? { provider: opts.provider } : {}),
+      ...(opts.mcpServers ? { mcpServers: opts.mcpServers as SessionConfig['mcpServers'] } : {}),
+      ...(opts.customAgents ? { customAgents: opts.customAgents as SessionConfig['customAgents'] } : {}),
+      ...(opts.skillDirectories ? { skillDirectories: opts.skillDirectories } : {}),
+      ...(opts.disabledSkills ? { disabledSkills: opts.disabledSkills } : {}),
+      ...(opts.availableTools ? { availableTools: opts.availableTools } : {}),
+      ...(opts.excludedTools ? { excludedTools: opts.excludedTools } : {}),
     };
   }
 
   async start(opts: SessionOptions): Promise<void> {
     this.cwd = opts.cwd;
     this._autopilot = opts.autopilot ?? false;
+    this._messageMode = opts.messageMode;
 
     const clientOpts: CopilotClientOptions = { useStdio: true };
     if (opts.binary) clientOpts.cliPath = opts.binary;
@@ -290,7 +322,10 @@ export class Session extends EventEmitter {
         this.once('error', errorHandler);
       });
 
-      const result = await Promise.race([this.session!.sendAndWait({ prompt }, 300_000), errorPromise]);
+      const sendOpts: { prompt: string; mode?: 'enqueue' | 'immediate' } = { prompt };
+      if (this._messageMode) sendOpts.mode = this._messageMode;
+
+      const result = await Promise.race([this.session!.sendAndWait(sendOpts, 300_000), errorPromise]);
       if (errorHandler) this.off('error', errorHandler);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
@@ -419,6 +454,7 @@ export class Session extends EventEmitter {
   async resume(sessionId: string, opts: SessionOptions): Promise<void> {
     this.cwd = opts.cwd;
     this._autopilot = opts.autopilot ?? false;
+    this._messageMode = opts.messageMode;
 
     if (!this.client) {
       const clientOpts: CopilotClientOptions = { useStdio: true };

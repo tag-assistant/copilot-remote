@@ -17,7 +17,27 @@ export interface ChatConfig {
   model: string;
   agent: string | null;
   reasoningEffort: string;
+  messageMode: '' | 'enqueue' | 'immediate';
+  infiniteSessions: boolean | undefined;
   autoApprove: Record<PermKind, boolean>;
+}
+
+/** Global config fields from config.json (not per-chat) */
+export interface GlobalConfig {
+  provider?: {
+    type?: 'openai' | 'azure' | 'anthropic';
+    baseUrl: string;
+    apiKey?: string;
+    model?: string;
+  };
+  mcpServers?: Record<string, unknown>;
+  customAgents?: unknown[];
+  skillDirectories?: string[];
+  disabledSkills?: string[];
+  systemInstructions?: string;
+  availableTools?: string[];
+  excludedTools?: string[];
+  [key: string]: unknown;
 }
 
 export const DEFAULT_CONFIG: ChatConfig = {
@@ -30,6 +50,8 @@ export const DEFAULT_CONFIG: ChatConfig = {
   model: 'claude-sonnet-4',
   agent: null,
   reasoningEffort: '',
+  messageMode: '',
+  infiniteSessions: undefined,
   autoApprove: {
     read: true,
     shell: false,
@@ -42,10 +64,16 @@ export const DEFAULT_CONFIG: ChatConfig = {
 
 export class ConfigStore {
   private global: ChatConfig;
+  private rawFile: GlobalConfig = {};
   private overrides = new Map<string, Partial<ChatConfig>>();
 
   constructor() {
     this.global = this.load();
+  }
+
+  /** Get the raw global config file (non-ChatConfig fields like provider, mcpServers, etc.) */
+  raw(): GlobalConfig {
+    return this.rawFile;
   }
 
   /** Get effective config for a session key (global + overrides merged) */
@@ -98,6 +126,7 @@ export class ConfigStore {
       if (existsSync(CONFIG_FILE)) {
         const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
         log.info('[config] Loaded from', CONFIG_FILE);
+        this.rawFile = data;
         return {
           ...DEFAULT_CONFIG,
           ...data,
