@@ -940,15 +940,8 @@ async function main(): Promise<void> {
     // Telegram doesn't include message_thread_id in callback_query.message
     const pfx = (d: string) => `@${chatId}|${d}`;
 
-    // Get current mode
-    let mode = 'interactive';
-    if (s?.alive) {
-      try {
-        mode = await s.getMode();
-      } catch {
-        /* ignore */
-      }
-    }
+    // Get current mode from config (not session — session may be killed during mode switch)
+    const mode = c.mode ?? 'interactive';
 
     const modeLabel = (m: string) => (m === mode ? '● ' : '') + (MODE_LABELS[m] ?? m);
     const text =
