@@ -1047,8 +1047,12 @@ async function main(): Promise<void> {
       case '/abort': {
         const s = sessions.get(chatId);
         if (s?.alive) {
-          await s.abort();
-          await client.sendMessage(chatId, '🛑 Aborted.');
+          s.kill();
+          sessions.delete(chatId);
+          sessionStore.delete(chatId);
+          await client.sendMessage(chatId, '🛑 Aborted. Session killed.');
+        } else {
+          await client.sendMessage(chatId, '⚪ No active session.');
         }
         break;
       }
