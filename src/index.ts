@@ -386,20 +386,20 @@ async function main(): Promise<void> {
     const c = cfg(chatId);
     // Steering: if session is busy (mid-turn), send as immediate to steer the agent
     if (session.busy && c.messageMode !== 'enqueue') {
-      const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
-      await react('⚡');
+      const react = c.showReactions ? (e: string) => { client.setReaction(chatId, msgId, e).catch(() => {}); } : () => {};
+      react('⚡');
       try {
         await session.sendImmediate(prompt, attachments);
-        await react('✅');
+        react('✅');
       } catch (e) {
-        await react('❌');
+        react('❌');
         log.debug('Immediate send failed:', e);
       }
       return;
     }
-    await client.sendTyping(chatId);
-    const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e).then(() => client.sendTyping(chatId)) : async () => {};
-    await react(LIFECYCLE_REACTIONS.received);
+    client.sendTyping(chatId);
+    const react = c.showReactions ? (e: string) => { client.setReaction(chatId, msgId, e).then(() => client.sendTyping(chatId)).catch(() => {}); } : () => {};
+    react(LIFECYCLE_REACTIONS.received);
     // Keep typing indicator alive every 4s while processing
     const typingInterval = setInterval(() => client.sendTyping(chatId), 4000);
 
@@ -696,7 +696,7 @@ async function main(): Promise<void> {
       try { session.kill(); } catch { /* ignore */ }
       sessions.delete(chatId);
       sessionStore.delete(chatId);
-      await react(LIFECYCLE_REACTIONS.error);
+      react(LIFECYCLE_REACTIONS.error);
       await client.sendMessage(chatId, '❌ Session error: ' + String(sendErr) + '\n\nUse /new to start a fresh session.');
       return;
     }
@@ -729,11 +729,11 @@ async function main(): Promise<void> {
       } else {
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
       }
-      await react(LIFECYCLE_REACTIONS.complete);
+      react(LIFECYCLE_REACTIONS.complete);
     } catch (err) {
       cleanup();
       clearInterval(typingInterval);
-      await react(LIFECYCLE_REACTIONS.error);
+      react(LIFECYCLE_REACTIONS.error);
       await client.sendMessage(chatId, '❌ ' + String(err));
     }
   }
