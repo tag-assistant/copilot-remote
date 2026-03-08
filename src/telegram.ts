@@ -45,7 +45,16 @@ export class TelegramClient implements Client {
     this.bot = new Bot<MyContext>(config.botToken);
 
     // ── Plugins ──
-    this.bot.use(sequentialize((ctx) => String(ctx.chatId ?? '')));
+    // Non-session commands bypass sequentialize so they respond instantly
+    const INSTANT_COMMANDS = new Set(['config', 'status', 'abort', 'new', 'sessions', 'cd', 'usage', 'compact']);
+    this.bot.use(sequentialize((ctx) => {
+      const text = ctx.message?.text ?? '';
+      if (text.startsWith('/')) {
+        const cmd = text.split(/[\s@]/)[0].slice(1);
+        if (INSTANT_COMMANDS.has(cmd)) return ''; // empty key = no sequentialization
+      }
+      return String(ctx.chatId ?? '');
+    }));
     this.bot.api.config.use(apiThrottler());
     this.bot.api.config.use(autoRetry());
     const defaultParseMode: Transformer = (prev, method, payload, signal) => {
