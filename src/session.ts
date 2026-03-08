@@ -149,6 +149,7 @@ export class Session extends EventEmitter {
       this.once('permission_response', handler);
       setTimeout(() => {
         this.off('permission_response', handler);
+        this.emit('permission_timeout');
         resolve({ kind: 'denied-interactively-by-user' } as PermissionRequestResult);
       }, 120_000);
     });
@@ -284,15 +285,14 @@ export class Session extends EventEmitter {
     return ((await this.session!.rpc.workspace.readFile({ path })) as any)?.content ?? '';
   }
 
-  async newSession(): Promise<void> {
+  async newSession(opts?: Partial<SessionOptions>): Promise<void> {
     if (this.session) await this.session.disconnect();
-    const config: SessionConfig = {
-      clientName: 'copilot-remote',
-      streaming: true,
-      workingDirectory: this.cwd,
-      onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
-    };
-    this.session = await this.client!.createSession(config);
+    const config = this.buildConfig({
+      cwd: this.cwd,
+      autopilot: this._autopilot,
+      ...opts,
+    });
+    this.session = await this.client!.createSession(config as SessionConfig);
     this.session.on((e: SessionEvent) => this.handleEvent(e));
   }
 

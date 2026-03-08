@@ -8,6 +8,10 @@ import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 
 function findBin(name: string): string {
   try {
@@ -54,7 +58,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const bin = config.copilotBinary ?? findBin('copilot');
 
-  log.info('⚡ Copilot Remote v0.8.0 | dir: ' + config.workDir);
+  log.info('⚡ Copilot Remote v' + version + ' | dir: ' + config.workDir);
 
   const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
 
@@ -349,6 +353,15 @@ async function main(): Promise<void> {
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
     session.on('user_input_request', onUserInput);
+    session.on('permission_timeout', () => {
+      // Clean up expired permission prompts for this chat
+      for (const [id, cid] of pendingPerms) {
+        if (cid === chatId) {
+          pendingPerms.delete(id);
+          client.editButtons(chatId, id, '⏰ Expired (denied)', []).catch(() => {});
+        }
+      }
+    });
     session.on('notification', async (text: string) => {
       await client.sendMessage(chatId, '🔔 ' + text);
     });
@@ -510,6 +523,10 @@ async function main(): Promise<void> {
           break;
         }
         const newDir = args[0].startsWith('~') ? args[0].replace('~', process.env.HOME ?? '/') : args[0];
+        if (!fs.existsSync(newDir)) {
+          await client.sendMessage(chatId, '❌ Directory not found: `' + newDir + '`');
+          break;
+        }
         workDirs.set(chatId, newDir);
         const oldSession = sessions.get(chatId);
         if (oldSession?.alive) {
@@ -1187,13 +1204,13 @@ async function main(): Promise<void> {
   };
 
   // ── Shutdown ──
-  const shutdown = () => {
+  const shutdown = async () => {
     client.stop();
-    for (const [, s] of sessions) s.kill();
+    await Promise.allSettled([...sessions.values()].map((s) => s.disconnect().catch(() => {})));
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown());
+  process.on('SIGTERM', () => shutdown());
 
   await client.start();
 }
