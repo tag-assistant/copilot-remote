@@ -53,7 +53,7 @@ export class Session extends EventEmitter {
     await this.client.start();
 
     const config: SessionConfig = {
-      clientName: 'copilot-remote',
+      clientName: 'copilot-remote', streaming: true,
       workingDirectory: this.cwd,
       onPermissionRequest: this._autopilot
         ? approveAll
@@ -160,7 +160,7 @@ export class Session extends EventEmitter {
   async newSession(): Promise<void> {
     if (this.session) await this.session.disconnect();
     const config: SessionConfig = {
-      clientName: 'copilot-remote',
+      clientName: 'copilot-remote', streaming: true,
       workingDirectory: this.cwd,
       onPermissionRequest: this._autopilot
         ? approveAll
