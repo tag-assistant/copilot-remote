@@ -13,6 +13,7 @@ import {
   type SessionEvent,
   type ModelInfo,
   type PermissionRequest,
+  type PermissionRequestResult,
   type SessionConfig,
 } from '@github/copilot-sdk';
 import { EventEmitter } from 'events';
@@ -189,20 +190,60 @@ export class Session extends EventEmitter {
     }
   }
 
-  private async handlePermission(req: PermissionRequest): Promise<any> {
+  // Read-only operations auto-approved
+  private static readonly AUTO_APPROVE_KINDS = new Set(['read', 'url']);
+
+  // Read-only shell commands auto-approved
+  private static readonly READONLY_COMMANDS = [
+    'cat ', 'ls ', 'ls\n', 'pwd', 'echo ', 'head ', 'tail ', 'wc ',
+    'find ', 'grep ', 'rg ', 'fd ', 'which ', 'whoami', 'hostname',
+    'date', 'git status', 'git log', 'git diff', 'git branch',
+    'git show', 'git rev-parse', 'git remote', 'git --no-pager',
+    'gh api', 'gh repo view', 'gh repo list', 'gh pr list', 'gh issue list',
+    'gh pr view', 'gh issue view', 'gh search',
+    'node -e', 'node -p', 'curl -s', 'curl --silent',
+  ];
+
+  private shouldAutoApprove(req: PermissionRequest): boolean {
+    // Always approve reads and URL fetches
+    if (Session.AUTO_APPROVE_KINDS.has(req.kind)) return true;
+
+    // Check shell commands for read-only patterns
+    if (req.kind === 'shell') {
+      const cmd = ((req as any).fullCommandText ?? '').trim();
+      // cd is always safe
+      if (cmd.startsWith('cd ')) return true;
+      // Check readonly command prefixes
+      for (const prefix of Session.READONLY_COMMANDS) {
+        if (cmd.startsWith(prefix)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async handlePermission(req: PermissionRequest): Promise<PermissionRequestResult> {
+    // Smart auto-approve for safe operations
+    if (this.shouldAutoApprove(req)) {
+      console.log('[SDK] Auto-approved: ' + req.kind + ' ' + ((req as any).fullCommandText ?? (req as any).url ?? '').slice(0, 80));
+      return { kind: 'approved' };
+    }
+
     console.log('[SDK] Permission request:', JSON.stringify(req).slice(0, 200));
     this.emit('permission_request', req);
 
-    return new Promise((resolve) => {
+    return new Promise<PermissionRequestResult>((resolve) => {
       const handler = (approved: boolean) => {
-        resolve({ outcome: approved ? 'approved' : 'cancelled' });
+        resolve(approved 
+          ? { kind: 'approved' as const } 
+          : { kind: 'denied-interactively-by-user' as const });
       };
       this.once('permission_response', handler);
 
       // Timeout after 120s
       setTimeout(() => {
         this.off('permission_response', handler);
-        resolve({ outcome: 'cancelled' });
+        resolve({ kind: 'denied-interactively-by-user' as const });
       }, 120_000);
     });
   }
