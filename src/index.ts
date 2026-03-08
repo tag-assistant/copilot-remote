@@ -22,19 +22,22 @@ function findBin(name: string): string {
 }
 
 function loadConfig() {
-  const cfgPath = path.join(process.cwd(), '.copilot-remote.json');
-  if (fs.existsSync(cfgPath)) return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+  // Load from ~/.copilot-remote/config.json or .copilot-remote.json in cwd
+  const homeCfg = path.join(process.env.HOME ?? '.', '.copilot-remote', 'config.json');
+  const cwdCfg = path.join(process.cwd(), '.copilot-remote.json');
+  const cfgPath = fs.existsSync(homeCfg) ? homeCfg : fs.existsSync(cwdCfg) ? cwdCfg : null;
+  const file = cfgPath ? JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) : {};
 
-  const botToken = process.env.COPILOT_REMOTE_BOT_TOKEN;
+  const botToken = file.botToken ?? process.env.COPILOT_REMOTE_BOT_TOKEN;
   if (!botToken) {
-    log.error('Missing COPILOT_REMOTE_BOT_TOKEN');
+    log.error('Missing botToken in ~/.copilot-remote/config.json or COPILOT_REMOTE_BOT_TOKEN env');
     process.exit(1);
   }
   return {
     botToken,
-    allowedUsers: process.env.COPILOT_REMOTE_ALLOWED_USERS?.split(',').filter(Boolean) ?? [],
-    workDir: process.env.COPILOT_REMOTE_WORKDIR ?? process.cwd(),
-    copilotBinary: process.env.COPILOT_REMOTE_BINARY,
+    allowedUsers: file.allowedUsers ?? process.env.COPILOT_REMOTE_ALLOWED_USERS?.split(',').filter(Boolean) ?? [],
+    workDir: file.workDir ?? process.env.COPILOT_REMOTE_WORKDIR ?? process.cwd(),
+    copilotBinary: file.copilotBinary ?? process.env.COPILOT_REMOTE_BINARY,
   };
 }
 
