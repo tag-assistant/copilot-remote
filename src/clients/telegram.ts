@@ -12,8 +12,8 @@ export class TelegramClient implements Client {
   }
 
   async start() {
-    this.bridge.setMessageHandler((text, chatId, msgId, replyText, replyToMsgId) => {
-      this.onMessage?.(text, chatId, msgId, replyText, replyToMsgId);
+    this.bridge.setMessageHandler((text, chatId, msgId, replyText, replyToMsgId, threadId) => {
+      this.onMessage?.(text, chatId, msgId, replyText, replyToMsgId, threadId);
     });
     this.bridge.setCallbackHandler((cbId, data, chatId, msgId) => {
       this.onCallback?.(cbId, data, chatId, msgId);
