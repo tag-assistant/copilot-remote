@@ -1,11 +1,11 @@
 // ============================================================
 // Copilot Remote — Main Entry Point
 // ============================================================
-// Bridges Copilot CLI ↔ Telegram. Your phone becomes a remote
-// control for local Copilot coding sessions.
+// Bridges Copilot CLI ↔ Telegram with JSONL streaming,
+// session continuity, and tool approval flows.
 // ============================================================
 
-import { CopilotSession } from './session.js';
+import { CopilotSession, CopilotToolExecute } from './session.js';
 import { TelegramBridge } from './telegram.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -52,9 +52,10 @@ async function main(): Promise<void> {
   const copilotBin = config.copilotBinary ?? findBinary('copilot');
 
   console.log('╔══════════════════════════════════════╗');
-  console.log('║       ⚡ Copilot Remote v0.1.0       ║');
+  console.log('║       ⚡ Copilot Remote v0.2.0       ║');
   console.log('╠══════════════════════════════════════╣');
   console.log('║  Copilot CLI ↔ Telegram Bridge       ║');
+  console.log('║  JSONL streaming + session resume     ║');
   console.log('╚══════════════════════════════════════╝');
   console.log('');
   console.log('Work dir:', config.workDir);
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     allowedUsers: config.allowedUsers,
   });
 
-  // Per-chat session + work directory
+  // Per-chat state
   const sessions = new Map<string, CopilotSession>();
   const chatWorkDirs = new Map<string, string>();
 
@@ -82,7 +83,6 @@ async function main(): Promise<void> {
     // Get or create session
     let session = sessions.get(chatId);
     if (!session || !session.alive) {
-      // Auto-start session on first message
       session = new CopilotSession();
       const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
 
@@ -96,21 +96,44 @@ async function main(): Promise<void> {
     }
 
     if (session.busy) {
-      await telegram.sendMessage(chatId, '⏳ Still processing previous prompt...');
+      await telegram.sendMessage(chatId, '⏳ Still processing...');
       return;
     }
 
-    // Send prompt to Copilot
+    // Send typing indicator
     await telegram.sendTyping(chatId);
+
+    // Track streaming for progress updates
+    let deltaCount = 0;
+    const onDelta = () => { deltaCount++; };
+    const onToolExec = async (tool: CopilotToolExecute) => {
+      const msg = '🔧 *Tool:* `' + tool.toolName + '`';
+      await telegram.sendMessage(chatId, msg);
+    };
+
+    session.on('delta', onDelta);
+    session.on('tool_execute', onToolExec);
 
     try {
       const response = await session.send(text);
-      if (response) {
-        await telegram.sendMessage(chatId, response);
+
+      // Clean up listeners
+      session.off('delta', onDelta);
+      session.off('tool_execute', onToolExec);
+
+      if (response.content) {
+        await telegram.sendMessage(chatId, response.content);
       } else {
-        await telegram.sendMessage(chatId, '(no output)');
+        await telegram.sendMessage(chatId, '(no response)');
+      }
+
+      // Show session info on first message
+      if (session.sessionId && deltaCount > 0) {
+        console.log('[Session] Conversation ID: ' + session.sessionId);
       }
     } catch (err) {
+      session.off('delta', onDelta);
+      session.off('tool_execute', onToolExec);
       await telegram.sendMessage(chatId, '❌ ' + String(err));
     }
   });
@@ -124,9 +147,7 @@ async function main(): Promise<void> {
         chatWorkDirs.set(chatId, workDir);
 
         const existing = sessions.get(chatId);
-        if (existing?.alive) {
-          existing.kill();
-        }
+        if (existing?.alive) existing.kill();
 
         const session = new CopilotSession();
         try {
@@ -151,6 +172,23 @@ async function main(): Promise<void> {
         break;
       }
 
+      case '/new': {
+        // Start fresh session (clear conversation history)
+        const session = sessions.get(chatId);
+        if (session?.alive) session.kill();
+
+        const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
+        const newSession = new CopilotSession();
+        try {
+          await newSession.start({ cwd: workDir, binary: copilotBin });
+          sessions.set(chatId, newSession);
+          await telegram.sendMessage(chatId, '🆕 New session started. Previous conversation cleared.');
+        } catch (err) {
+          await telegram.sendMessage(chatId, '❌ ' + String(err));
+        }
+        break;
+      }
+
       case '/cd': {
         const dir = args[0];
         if (!dir) {
@@ -158,7 +196,6 @@ async function main(): Promise<void> {
           await telegram.sendMessage(chatId, '📂 ' + current);
         } else {
           chatWorkDirs.set(chatId, dir);
-          // Restart session in new dir
           const existing = sessions.get(chatId);
           if (existing?.alive) existing.kill();
           sessions.delete(chatId);
@@ -170,11 +207,15 @@ async function main(): Promise<void> {
       case '/status': {
         const session = sessions.get(chatId);
         const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
+        const lines = [];
         if (session?.alive) {
-          await telegram.sendMessage(chatId, '✅ Active in `' + workDir + '`' + (session.busy ? ' (busy)' : ''));
+          lines.push('✅ Active in `' + workDir + '`');
+          if (session.sessionId) lines.push('🆔 Session: `' + session.sessionId.slice(0, 8) + '...`');
+          if (session.busy) lines.push('⏳ Processing...');
         } else {
-          await telegram.sendMessage(chatId, '⚪ No active session. Send a message to auto-start.');
+          lines.push('⚪ No active session. Send a message to auto-start.');
         }
+        await telegram.sendMessage(chatId, lines.join('\n'));
         break;
       }
 
@@ -197,17 +238,19 @@ async function main(): Promise<void> {
       case '/help':
       default:
         await telegram.sendMessage(chatId, [
-          '⚡ *Copilot Remote*',
+          '⚡ *Copilot Remote v0.2.0*',
           '',
           '`/start [dir]` — Start in directory',
           '`/stop` — Kill session',
-          '`/cd [dir]` — Change/show working directory',
-          '`/status` — Session status',
+          '`/new` — Fresh session (clear history)',
+          '`/cd [dir]` — Change working directory',
+          '`/status` — Session status + ID',
           '`/yes` `/y` — Approve tool action',
           '`/no` `/n` — Deny tool action',
           '`/help` — This message',
           '',
           'Or just type a prompt — session auto-starts.',
+          'Conversation context persists via `--resume`.',
         ].join('\n'));
         break;
     }
