@@ -122,8 +122,8 @@ async function main(): Promise<void> {
     return origSendMessage(cid, text, { ...opts, threadId: tid });
   };
   client.sendButtons = (key: string, text: string, buttons: any) => {
-    const [cid] = resolveKey(key);
-    return origSendButtons(cid, text, buttons);
+    const [cid, tid] = resolveKey(key);
+    return origSendButtons(cid, text, buttons, tid);
   };
   client.editMessage = (key: string, msgId: number, text: string) => {
     const [cid] = resolveKey(key);

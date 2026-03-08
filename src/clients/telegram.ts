@@ -54,8 +54,8 @@ export class TelegramClient implements Client {
   editMessage(chatId: string, msgId: number, text: string) {
     return this.bridge.editMessage(chatId, msgId, text);
   }
-  sendButtons(chatId: string, text: string, buttons: Button[][]) {
-    return this.bridge.sendMessageWithButtons(chatId, text, buttons);
+  sendButtons(chatId: string, text: string, buttons: Button[][], threadId?: number) {
+    return this.bridge.sendMessageWithButtons(chatId, text, buttons, threadId);
   }
   editButtons(chatId: string, msgId: number, text: string, buttons: Button[][]) {
     return this.bridge.editMessageButtons(chatId, msgId, text, buttons);

@@ -230,6 +230,7 @@ export class TelegramBridge {
     chatId: string | number,
     text: string,
     buttons: { text: string; data: string }[][],
+    threadId?: number,
   ): Promise<number | null> {
     const markup = {
       inline_keyboard: buttons.map((row) =>
@@ -240,7 +241,11 @@ export class TelegramBridge {
         })),
       ),
     };
-    const res = await this.sendText('sendMessage', { chat_id: chatId, reply_markup: markup }, text);
+    const res = await this.sendText(
+      'sendMessage',
+      { chat_id: chatId, reply_markup: markup, ...(threadId ? { message_thread_id: threadId } : {}) },
+      text,
+    );
     return res?.result?.message_id ?? null;
   }
 

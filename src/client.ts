@@ -23,7 +23,7 @@ export interface Client {
   // Messaging
   sendMessage(chatId: string, text: string, opts?: MessageOptions): Promise<number | null>;
   editMessage(chatId: string, msgId: number, text: string): Promise<void>;
-  sendButtons(chatId: string, text: string, buttons: Button[][]): Promise<number | null>;
+  sendButtons(chatId: string, text: string, buttons: Button[][], threadId?: number): Promise<number | null>;
   editButtons(chatId: string, msgId: number, text: string, buttons: Button[][]): Promise<void>;
 
   // Presence
