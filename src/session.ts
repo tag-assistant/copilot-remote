@@ -201,6 +201,26 @@ export class Session extends EventEmitter {
       ...(opts.disabledSkills ? { disabledSkills: opts.disabledSkills } : {}),
       ...(opts.availableTools ? { availableTools: opts.availableTools } : {}),
       ...(opts.excludedTools ? { excludedTools: opts.excludedTools } : {}),
+      hooks: {
+        onSessionStart: async () => {
+          this.emit('hook:session_start');
+        },
+        onSessionEnd: async () => {
+          this.emit('hook:session_end');
+        },
+        onPreToolUse: async (input: { toolName?: string; arguments?: unknown }) => {
+          this.emit('hook:pre_tool', { toolName: input.toolName, arguments: input.arguments });
+        },
+        onPostToolUse: async (input: { toolName?: string; result?: unknown }) => {
+          this.emit('hook:post_tool', { toolName: input.toolName, result: input.result });
+        },
+        onErrorOccurred: async (input: { error?: unknown; message?: string }) => {
+          this.emit('hook:error', { error: input.error, message: input.message });
+        },
+        onUserPromptSubmitted: async (input: { prompt?: string }) => {
+          this.emit('hook:user_prompt', { prompt: input.prompt });
+        },
+      },
     };
   }
 
