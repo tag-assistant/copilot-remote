@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const bin = config.copilotBinary ?? findBin('copilot');
 
-  log.info('⚡ Copilot Remote v0.5 | dir: ' + config.workDir);
+  log.info('⚡ Copilot Remote v0.8.0 | dir: ' + config.workDir);
 
   const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
 
