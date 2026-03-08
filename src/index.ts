@@ -141,6 +141,23 @@ const TOOL_LABELS: Record<string, string> = {
   glob: '📂 Glob',
   delete_file: '🗑 Delete',
   write_file: '📝 Write',
+  web_fetch: '🌐 Fetch',
+  web_search: '🔎 Search',
+};
+
+// Reactions for different lifecycle events
+const LIFECYCLE_REACTIONS: Record<string, string> = {
+  received: '👀',        // 👀 message received, starting to think
+  thinking: '🤔',        // 🤔 reasoning/thinking
+  tool_call: '🔨',       // 🔨 executing tools
+  writing: '✍️',       // ✍️ generating response
+  web: '🌐',             // 🌐 fetching from web
+  file_edit: '✏️',     // ✏️ editing files
+  command: '▶️',       // ▶️ running commands
+  search: '🔍',          // 🔍 searching
+  complete: '✅',            // ✅ done
+  error: '💥',           // 💥 error
+  steering: '⚡',            // ⚡ steering/immediate
 };
 
 const PERM_ICONS: Record<string, string> = {
@@ -380,7 +397,7 @@ async function main(): Promise<void> {
     }
     await client.sendTyping(chatId);
     const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e).then(() => client.sendTyping(chatId)) : async () => {};
-    await react('🤔');
+    await react(LIFECYCLE_REACTIONS.received);
     // Keep typing indicator alive every 4s while processing
     const typingInterval = setInterval(() => client.sendTyping(chatId), 4000);
 
@@ -481,7 +498,13 @@ async function main(): Promise<void> {
     };
     const onToolStart = (t: ToolEvent) => {
       client.sendTyping(chatId);
-      react('👨‍💻');
+      // React based on tool type
+      const toolReaction = t.toolName === 'web_fetch' || t.toolName === 'web_search' ? LIFECYCLE_REACTIONS.web
+        : t.toolName === 'bash' ? LIFECYCLE_REACTIONS.command
+        : t.toolName === 'edit_file' || t.toolName === 'write_file' || t.toolName === 'create_file' ? LIFECYCLE_REACTIONS.file_edit
+        : t.toolName === 'grep_search' || t.toolName === 'search' || t.toolName === 'glob' ? LIFECYCLE_REACTIONS.search
+        : LIFECYCLE_REACTIONS.tool_call;
+      react(toolReaction);
       // report_intent: show as headline, not a tool line
       if (t.toolName === 'report_intent') {
         const intent = t.arguments?.intent ?? t.arguments?.message ?? '';
@@ -645,7 +668,7 @@ async function main(): Promise<void> {
       try { session.kill(); } catch { /* ignore */ }
       sessions.delete(chatId);
       sessionStore.delete(chatId);
-      await react('😱');
+      await react(LIFECYCLE_REACTIONS.error);
       await client.sendMessage(chatId, '❌ Session error: ' + String(sendErr) + '\n\nUse /new to start a fresh session.');
       return;
     }
@@ -674,11 +697,11 @@ async function main(): Promise<void> {
       } else {
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
       }
-      await client.removeReaction(chatId, msgId);
+      await react(LIFECYCLE_REACTIONS.complete);
     } catch (err) {
       cleanup();
       clearInterval(typingInterval);
-      await react('😱');
+      await react(LIFECYCLE_REACTIONS.error);
       await client.sendMessage(chatId, '❌ ' + String(err));
     }
   }
