@@ -559,10 +559,10 @@ async function main(): Promise<void> {
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
     session.on('user_input_request', onUserInput);
-    session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
+    const onContextInfo = (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
       contextInfoMap.set(chatId, info);
-    });
-    session.on('usage', (u: Record<string, unknown>) => {
+    };
+    const onUsage = (u: Record<string, unknown>) => {
       lastUsage = {
         model: u.model as string,
         inputTokens: u.inputTokens as number,
@@ -571,11 +571,11 @@ async function main(): Promise<void> {
         duration: u.duration as number,
       };
       lastUsageMap.set(chatId, lastUsage);
-    });
-    session.on('turn_start', () => {
+    };
+    const onTurnStart = () => {
       schedEdit();
-    });
-    session.on('permission_timeout', () => {
+    };
+    const onPermTimeout = () => {
       // Clean up expired permission prompts for this chat
       for (const [id, cid] of pendingPerms) {
         if (cid === chatId) {
@@ -583,20 +583,28 @@ async function main(): Promise<void> {
           client.editButtons(chatId, id, '⏰ Expired (denied)', []).catch(() => {});
         }
       }
-    });
-    session.on('notification', async (text: string) => {
+    };
+    const onNotification = async (text: string) => {
       await client.sendMessage(chatId, '🔔 ' + text);
-    });
-    session.on('hook:error', async (info: { error?: unknown; message?: string }) => {
+    };
+    const onHookError = async (info: { error?: unknown; message?: string }) => {
       const msg = info.message ?? (info.error instanceof Error ? info.error.message : String(info.error ?? 'Unknown error'));
       await client.sendMessage(chatId, '⚠️ *SDK Error:* ' + msg);
-    });
-    session.on('hook:session_start', () => {
+    };
+    const onHookSessionStart = () => {
       log.debug(`[hook] Session started for chat ${chatId}`);
-    });
-    session.on('hook:session_end', () => {
+    };
+    const onHookSessionEnd = () => {
       log.debug(`[hook] Session ended for chat ${chatId}`);
-    });
+    };
+    session.on('context_info', onContextInfo);
+    session.on('usage', onUsage);
+    session.on('turn_start', onTurnStart);
+    session.on('permission_timeout', onPermTimeout);
+    session.on('notification', onNotification);
+    session.on('hook:error', onHookError);
+    session.on('hook:session_start', onHookSessionStart);
+    session.on('hook:session_end', onHookSessionEnd);
 
     const cleanup = () => {
       if (timer) {
@@ -609,6 +617,14 @@ async function main(): Promise<void> {
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);
       session.off('user_input_request', onUserInput);
+      session.off('context_info', onContextInfo);
+      session.off('usage', onUsage);
+      session.off('turn_start', onTurnStart);
+      session.off('permission_timeout', onPermTimeout);
+      session.off('notification', onNotification);
+      session.off('hook:error', onHookError);
+      session.off('hook:session_start', onHookSessionStart);
+      session.off('hook:session_end', onHookSessionEnd);
     };
 
     let res: { content: string };
