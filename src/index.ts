@@ -943,19 +943,24 @@ async function main(): Promise<void> {
     // Get current mode from config (not session — session may be killed during mode switch)
     const mode = c.mode ?? 'interactive';
 
-    const modeLabel = (m: string) => (m === mode ? '● ' : '') + (MODE_LABELS[m] ?? m);
+    const MODE_STYLES: Record<string, string> = {
+      interactive: 'primary',
+      plan: 'success',
+      autopilot: 'danger',
+    };
+    const modeBtn = (m: string) => ({
+      text: (m === mode ? '● ' : '') + (MODE_LABELS[m] ?? m),
+      data: pfx('mode:' + m),
+      ...(m === mode ? { style: MODE_STYLES[m] } : {}),
+    });
     const text =
       '⚙️ *Settings*\nModel: `' +
       c.model +
       '`\nMode: ' +
-      modeLabel(mode) +
+      (MODE_LABELS[mode] ?? mode) +
       (c.agent ? '\nAgent: `' + c.agent + '`' : '');
     const buttons = [
-      [
-        { text: modeLabel('interactive')!, data: pfx('mode:interactive') },
-        { text: modeLabel('plan')!, data: pfx('mode:plan') },
-        { text: modeLabel('autopilot')!, data: pfx('mode:autopilot') },
-      ],
+      [modeBtn('interactive'), modeBtn('plan'), modeBtn('autopilot')],
       [{ text: '🤖 Change Model', data: pfx('cfg:modelPicker') }],
       [{ text: '🧠 Reasoning: ' + c.reasoningEffort, data: pfx('cfg:reasoning') }],
       [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
