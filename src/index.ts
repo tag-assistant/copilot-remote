@@ -106,22 +106,42 @@ async function main(): Promise<void> {
 
     // Stream state — one message, continuously edited
     let streamMsgId: number | null = null;
-    let streamText = '';
+    let thinkingText = '';
+    let toolLines: string[] = [];
+    let responseText = '';
+    let phase: 'thinking' | 'tools' | 'responding' = 'thinking';
     let lastEditTime = 0;
     let editTimer: NodeJS.Timeout | null = null;
     const THROTTLE_MS = 1200;
-    const MIN_INITIAL_CHARS = 20;
+    const MIN_INITIAL_CHARS = 15;
+
+    const buildDisplay = (): string => {
+      const parts: string[] = [];
+      if (thinkingText) {
+        // Show last ~300 chars of thinking, italic
+        const snippet = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
+        parts.push('💭 _' + snippet.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&') + '_');
+      }
+      if (toolLines.length > 0) {
+        parts.push(toolLines.join('\n'));
+      }
+      if (responseText) {
+        parts.push(responseText);
+      }
+      return parts.join('\n\n');
+    };
 
     const flushEdit = async () => {
       editTimer = null;
       lastEditTime = Date.now();
-      if (!streamText.trim()) return;
+      const display = buildDisplay();
+      if (!display.trim()) return;
 
       if (!streamMsgId) {
-        if (streamText.length < MIN_INITIAL_CHARS) return;
-        streamMsgId = await telegram.sendMessage(chatId, streamText);
+        if (display.length < MIN_INITIAL_CHARS) return;
+        streamMsgId = await telegram.sendMessage(chatId, display);
       } else {
-        await telegram.editMessage(chatId, streamMsgId, streamText);
+        await telegram.editMessage(chatId, streamMsgId, display);
       }
     };
 
@@ -135,46 +155,121 @@ async function main(): Promise<void> {
     const codingTools = ['bash', 'exec', 'read_file', 'edit_file', 'create_file', 'delete_file', 'write_file', 'list_dir', 'view'];
     const webTools = ['web_search', 'web_fetch', 'browser'];
 
+    const prettyTool: Record<string, string> = {
+      read_file: '📖 Read', edit_file: '✏️ Edit', create_file: '📝 Create',
+      bash: '▶️ Run', report_intent: '🎯 Plan', view: '👁 View',
+      list_dir: '📂 List', search: '🔍 Search', grep_search: '🔍 Search',
+      think: '💡 Think', glob: '📂 Glob', delete_file: '🗑 Delete',
+      write_file: '📝 Write',
+    };
+
     const onThinking = (text: string) => {
-      streamText += text;
+      thinkingText += text;
       scheduleEdit();
+    };
+
+    const onThinkingDone = () => {
+      // Keep thinking text visible until response starts
     };
 
     const onDelta = (text: string) => {
-      streamText += text;
+      if (phase !== 'responding') {
+        phase = 'responding';
+        // Clear thinking when response starts — tools stay
+        thinkingText = '';
+      }
+      responseText += text;
       scheduleEdit();
     };
 
-    const onToolStart = async (tool: any) => {
+    const onToolStart = (tool: any) => {
       const name = tool.toolName;
-      if (webTools.includes(name)) await react('⚡');
-      else if (codingTools.includes(name)) await react('👨‍💻');
-      else await react('🔥');
+      phase = 'tools';
+
+      // React based on tool type
+      if (webTools.includes(name)) react('⚡');
+      else if (codingTools.includes(name)) react('👨‍💻');
+      else react('🔥');
+
+      // Build tool line
+      const label = prettyTool[name] ?? '🔧 ' + name.replace(/_/g, ' ');
+      const args = tool.arguments;
+      let detail = '';
+      if (name === 'bash' && args?.command) {
+        detail = ' `' + args.command.slice(0, 60) + (args.command.length > 60 ? '...' : '') + '`';
+      } else if (args?.file_path) {
+        detail = ' `' + args.file_path + '`';
+      } else if (args?.pattern) {
+        detail = ' `' + args.pattern + '`';
+      } else if (args?.query) {
+        detail = ' "' + args.query.slice(0, 40) + '"';
+      }
+      toolLines.push(label + detail);
+      scheduleEdit();
+    };
+
+    const onToolComplete = (tool: any) => {
+      // Mark tool as done with checkmark
+      const idx = toolLines.length - 1;
+      if (idx >= 0 && tool.success !== false) {
+        toolLines[idx] = toolLines[idx] + ' ✓';
+        scheduleEdit();
+      } else if (idx >= 0) {
+        toolLines[idx] = toolLines[idx] + ' ✗';
+        scheduleEdit();
+      }
     };
 
     session.on('thinking', onThinking);
+    session.on('thinking_done', onThinkingDone);
     session.on('delta', onDelta);
     session.on('tool_start', onToolStart);
+    session.on('tool_complete', onToolComplete);
+
+    // Track usage for footer
+    let resultData: any = null;
+    const onResult = (data: any) => { resultData = data; };
+    session.on('result', onResult);
 
     try {
       const response = await session.send(text);
 
       if (editTimer) { clearTimeout(editTimer); editTimer = null; }
       session.off('thinking', onThinking);
+      session.off('thinking_done', onThinkingDone);
       session.off('delta', onDelta);
       session.off('tool_start', onToolStart);
+      session.off('tool_complete', onToolComplete);
+      session.off('result', onResult);
 
-      if (response.content) {
-        if (streamMsgId && response.content.length <= 4096) {
-          await telegram.editMessage(chatId, streamMsgId, response.content);
-        } else if (streamMsgId && response.content.length > 4096) {
-          await telegram.editMessage(chatId, streamMsgId, response.content.slice(0, 4096));
-          await telegram.sendMessage(chatId, response.content.slice(4096));
-        } else {
-          await telegram.sendMessage(chatId, response.content);
+      // Build final message: clean response + usage footer
+      let finalText = response.content || '_(no response)_';
+
+      // Add usage footer
+      const usage = resultData?.usage;
+      if (usage) {
+        const parts: string[] = [];
+        if (usage.premiumRequests) parts.push(usage.premiumRequests + ' reqs');
+        if (usage.totalApiDurationMs) parts.push((usage.totalApiDurationMs / 1000).toFixed(1) + 's');
+        const changes = usage.codeChanges;
+        if (changes && (changes.linesAdded || changes.linesRemoved)) {
+          parts.push('+' + (changes.linesAdded ?? 0) + ' -' + (changes.linesRemoved ?? 0) + ' lines');
         }
-      } else if (!streamMsgId) {
-        await telegram.sendMessage(chatId, '_(no response)_');
+        if (changes?.filesModified?.length) {
+          parts.push(changes.filesModified.length + ' files');
+        }
+        if (parts.length > 0) {
+          finalText += '\n\n`' + parts.join(' · ') + '`';
+        }
+      }
+
+      if (streamMsgId && finalText.length <= 4096) {
+        await telegram.editMessage(chatId, streamMsgId, finalText);
+      } else if (streamMsgId && finalText.length > 4096) {
+        await telegram.editMessage(chatId, streamMsgId, finalText.slice(0, 4096));
+        await telegram.sendMessage(chatId, finalText.slice(4096));
+      } else {
+        await telegram.sendMessage(chatId, finalText);
       }
 
       await react('👍');
@@ -184,8 +279,11 @@ async function main(): Promise<void> {
     } catch (err) {
       if (editTimer) { clearTimeout(editTimer); editTimer = null; }
       session.off('thinking', onThinking);
+      session.off('thinking_done', onThinkingDone);
       session.off('delta', onDelta);
       session.off('tool_start', onToolStart);
+      session.off('tool_complete', onToolComplete);
+      session.off('result', onResult);
       await react('😱');
       await telegram.sendMessage(chatId, '❌ ' + String(err));
     }
