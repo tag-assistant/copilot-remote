@@ -126,7 +126,7 @@ function resolveGhToken(): string | undefined {
 const PROMPT_COMMANDS: Record<string, { usage?: string; prompt: (args: string) => string }> = {
   '/research': {
     usage: '`/research <topic>`',
-    prompt: (a) => 'Research this topic thoroughly using web search and GitHub: ' + a,
+    prompt: (a) => a, // agent selection handles research mode
   },
   '/diff': { prompt: () => 'Review all uncommitted changes. Show a summary and any issues.' },
   '/review': { prompt: () => 'Thorough code review of recent changes. Check bugs, security, style.' },
@@ -663,9 +663,17 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, 'Usage: ' + pc.usage);
         return;
       }
-      const s = sessions.get(chatId);
+      let s = sessions.get(chatId);
       if (!s?.alive) {
-        await getSession(chatId);
+        s = await getSession(chatId);
+      }
+      // For /research, activate the research agent before sending the prompt
+      if (cmd === '/research' && s?.alive) {
+        try {
+          await s.selectAgent('research');
+        } catch (e) {
+          log.debug('Failed to select research agent:', e);
+        }
       }
       return handlePrompt(chatId, msgId, pc.prompt(argStr));
     }
@@ -814,16 +822,54 @@ async function main(): Promise<void> {
       }
       case '/agent': {
         const s = sessions.get(chatId);
-        if (!args[0] && s?.alive) {
-          try {
-            const r = await s.listAgents();
-            const agents = r?.agents ?? [];
-            const lines = agents.length
-              ? agents.map((a: AgentInfo) => '• `' + (a.name ?? a) + '`')
-              : ['No agents found.'];
-            await client.sendMessage(chatId, '🤖 *Agents*\n' + lines.join('\n'));
-          } catch (e) {
-            await client.sendMessage(chatId, '❌ ' + e);
+        if (!args[0]) {
+          // List available agents with buttons
+          if (s?.alive) {
+            try {
+              const r = await s.listAgents();
+              const agents = r?.agents ?? [];
+              const agentPfx = (d: string) => `@${chatId}|${d}`;
+              // Also show current agent
+              let currentName = '';
+              try {
+                const cur = await s.getCurrentAgent();
+                currentName = cur?.agent?.name ?? '';
+              } catch { /* ignore */ }
+              if (!agents.length) {
+                await client.sendMessage(chatId, '🤖 No agents found.');
+                break;
+              }
+              const buttons: Button[][] = [];
+              for (let i = 0; i < agents.length; i += 2) {
+                const row: Button[] = [];
+                for (let j = i; j < Math.min(i + 2, agents.length); j++) {
+                  const a = agents[j];
+                  const name = a.name ?? String(a);
+                  const label = name === currentName ? '✅ ' + name : name;
+                  row.push({ text: label, data: agentPfx('agent:' + name) });
+                }
+                buttons.push(row);
+              }
+              if (currentName) {
+                buttons.push([{ text: '❌ Deselect agent', data: agentPfx('agent:__deselect__') }]);
+              }
+              await client.sendButtons(chatId, '🤖 *Agents*' + (currentName ? ' (current: `' + currentName + '`)' : ''), buttons);
+            } catch (e) {
+              await client.sendMessage(chatId, '❌ ' + e);
+            }
+          } else {
+            // No active session — show configured custom agents from config
+            const g = configStore.raw();
+            const custom = g.customAgents ?? [];
+            if (custom.length) {
+              const lines = custom.map((a: unknown) => {
+                const agent = a as { name?: string };
+                return '• `' + (agent.name ?? String(a)) + '`';
+              });
+              await client.sendMessage(chatId, '🤖 *Custom Agents*\n' + lines.join('\n') + '\n\nStart a session first to list all agents.');
+            } else {
+              await client.sendMessage(chatId, '🤖 No agents configured. Start a session first to list available agents.');
+            }
           }
           break;
         }
@@ -1423,6 +1469,27 @@ async function main(): Promise<void> {
       const s = sessions.get(chatId);
       if (s?.alive) s.answerInput(answer);
       await client.editButtons(chatId, msgId, '❓ → ' + answer, []);
+      return;
+    }
+    // Agent selection from /agent button menu
+    if (data.startsWith('agent:')) {
+      const agentName = data.slice(6);
+      const s = sessions.get(chatId);
+      if (!s?.alive) {
+        await client.editButtons(chatId, msgId, '❌ No active session.', []);
+        return;
+      }
+      try {
+        if (agentName === '__deselect__') {
+          await s.deselectAgent();
+          await client.editButtons(chatId, msgId, '🤖 Agent deselected.', []);
+        } else {
+          await s.selectAgent(agentName);
+          await client.editButtons(chatId, msgId, '🤖 Agent: `' + agentName + '`', []);
+        }
+      } catch (e) {
+        await client.editButtons(chatId, msgId, '❌ ' + e, []);
+      }
       return;
     }
     if (data === 'cfg:reasoning') return sendReasoningMenu(chatId, msgId);
