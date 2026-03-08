@@ -1223,6 +1223,62 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case '/prompt': {
+        const dir = workDir(chatId);
+        // Scan for .prompt.md files in .github/prompts/ (repo) and ~/.copilot/prompts/ (personal)
+        const promptDirs = [
+          path.join(dir, '.github', 'prompts'),
+          path.join(process.env.HOME ?? '', '.copilot', 'prompts'),
+          path.join(process.env.HOME ?? '', '.github', 'prompts'),
+        ];
+        const prompts: { name: string; path: string; description: string }[] = [];
+        for (const pd of promptDirs) {
+          try {
+            if (!fs.existsSync(pd)) continue;
+            for (const f of fs.readdirSync(pd)) {
+              if (!f.endsWith('.prompt.md')) continue;
+              const name = f.replace('.prompt.md', '');
+              const content = fs.readFileSync(path.join(pd, f), 'utf-8');
+              // Extract description from YAML frontmatter or first line
+              const descMatch = content.match(/^---\n[\s\S]*?description:\s*(.+)\n[\s\S]*?---/) ?? content.match(/^#\s*(.+)/m);
+              const desc = descMatch?.[1]?.trim() ?? '';
+              prompts.push({ name, path: path.join(pd, f), description: desc });
+            }
+          } catch { /* skip */ }
+        }
+
+        if (!argStr) {
+          // List available prompts
+          if (!prompts.length) {
+            await client.sendMessage(chatId, '📝 No prompt files found.\n\nCreate `.prompt.md` files in:\n• `.github/prompts/` (repo)\n• `~/.copilot/prompts/` (personal)');
+            break;
+          }
+          const buttons: Button[][] = prompts.map(p => [{
+            text: p.name + (p.description ? ' — ' + p.description.slice(0, 40) : ''),
+            data: '@' + chatId + '|prompt:' + p.name,
+          }]);
+          await client.sendButtons(chatId, '📝 *Prompt Files*', buttons);
+          break;
+        }
+
+        // Run a specific prompt
+        const match = prompts.find(p => p.name === argStr || p.name === args[0]);
+        if (!match) {
+          await client.sendMessage(chatId, '❌ Prompt `' + argStr + '` not found.');
+          break;
+        }
+        let content = fs.readFileSync(match.path, 'utf-8');
+        // Strip YAML frontmatter
+        content = content.replace(/^---\n[\s\S]*?---\n/, '').trim();
+        // Replace variable placeholders {{variable}} with remaining args
+        const vars = args.slice(1);
+        let varIdx = 0;
+        content = content.replace(/\{\{(\w+)\}\}/g, (_, name) => {
+          return vars[varIdx++] ?? '{{' + name + '}}';
+        });
+        await handlePrompt(chatId, msgId, content);
+        break;
+      }
       case '/plan': {
         const s = sessions.get(chatId);
         if (!s?.alive) {
@@ -1865,6 +1921,28 @@ async function main(): Promise<void> {
       } catch (err) {
         await client.editButtons(chatId, msgId, '❌ ' + err, []);
       }
+      return;
+    }
+    // Prompt file selection
+    if (data.startsWith('prompt:')) {
+      const name = data.slice(7);
+      // Re-scan for the prompt file
+      const dir = workDir(chatId);
+      const promptDirs = [
+        path.join(dir, '.github', 'prompts'),
+        path.join(process.env.HOME ?? '', '.copilot', 'prompts'),
+        path.join(process.env.HOME ?? '', '.github', 'prompts'),
+      ];
+      for (const pd of promptDirs) {
+        const fp = path.join(pd, name + '.prompt.md');
+        if (fs.existsSync(fp)) {
+          let content = fs.readFileSync(fp, 'utf-8').replace(/^---\n[\s\S]*?---\n/, '').trim();
+          await client.editButtons(chatId, msgId, '📝 Running `' + name + '`...', []);
+          await handlePrompt(chatId, msgId, content);
+          return;
+        }
+      }
+      await client.editButtons(chatId, msgId, '❌ Prompt `' + name + '` not found.', []);
       return;
     }
     if (data.startsWith('agent:')) {
