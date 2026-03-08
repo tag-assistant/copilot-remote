@@ -481,17 +481,27 @@ async function main(): Promise<void> {
       if (!timer) timer = setTimeout(() => { flush().catch(() => {}); }, Math.max(0, THROTTLE - (Date.now() - lastEdit)));
     };
 
+    let thinkingSending = false; // guard against concurrent sends
     const onThink = async (t: string) => {
       if (!c.showThinking) return;
       thinkingText += t;
+      if (thinkingSending) return; // another call is already creating the message
       // Send thinking to a separate message (not the main stream)
       const preview = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
       const escaped = preview.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
       const text = '💭 _' + escaped + '_';
       if (!thinkingMsgId) {
-        if (text.length < 20) return; // debounce tiny thinking
+        if (text.length < 40) return; // debounce tiny thinking
+        thinkingSending = true;
         const id = await client.sendMessage(chatId, text, { disableLinkPreview: true });
         thinkingMsgId = id;
+        thinkingSending = false;
+        // Flush any accumulated text while we were sending
+        if (thinkingText.length > preview.length) {
+          const updated = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
+          const esc2 = updated.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+          client.editMessage(chatId, thinkingMsgId!, '💭 _' + esc2 + '_').catch(() => {});
+        }
       } else {
         client.editMessage(chatId, thinkingMsgId, text).catch(() => {});
       }
