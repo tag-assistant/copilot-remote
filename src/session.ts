@@ -144,7 +144,13 @@ export class CopilotSession extends EventEmitter {
         const content = update.content;
         if (content?.type === 'text') {
           this.emit('delta', content.text);
-        } else if (content?.type === 'thinking') {
+        }
+        break;
+      }
+
+      case 'agent_thought_chunk': {
+        const content = update.content;
+        if (content?.type === 'text' || typeof content?.text === 'string') {
           this.emit('thinking', content.text);
         }
         break;
@@ -176,10 +182,7 @@ export class CopilotSession extends EventEmitter {
       }
 
       default: {
-        // Log unknown updates for debugging
-        if (type) {
-          console.log('[ACP] Update: ' + type);
-        }
+        console.log('[ACP] Update: ' + type + ' ' + JSON.stringify(update).slice(0, 200));
         break;
       }
     }
