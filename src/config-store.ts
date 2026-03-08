@@ -19,6 +19,7 @@ export interface ChatConfig {
   reasoningEffort: string;
   messageMode: '' | 'enqueue' | 'immediate';
   infiniteSessions: boolean | undefined;
+  excludedTools: string[];
   autoApprove: Record<PermKind, boolean>;
 }
 
@@ -52,6 +53,7 @@ export const DEFAULT_CONFIG: ChatConfig = {
   reasoningEffort: '',
   messageMode: '',
   infiniteSessions: undefined,
+  excludedTools: [],
   autoApprove: {
     read: true,
     shell: false,

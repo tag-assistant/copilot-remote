@@ -187,7 +187,11 @@ async function main(): Promise<void> {
 
   log.info('⚡ Copilot Remote v' + version + ' | dir: ' + config.workDir);
 
-  const client: Client = new TelegramClient({ botToken, allowedUsers: config.allowedUsers, profilePhoto: config.profilePhoto });
+  const client: Client = new TelegramClient({
+    botToken,
+    allowedUsers: config.allowedUsers,
+    profilePhoto: config.profilePhoto,
+  });
 
   // ── Per-chat state ──
   // ── Config ──
@@ -282,7 +286,9 @@ async function main(): Promise<void> {
       disabledSkills: globalCfg.disabledSkills,
       systemInstructions: globalCfg.systemInstructions,
       availableTools: globalCfg.availableTools,
-      excludedTools: globalCfg.excludedTools,
+      excludedTools: [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])].length
+        ? [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])]
+        : undefined,
     };
 
     // Try to resume a saved session
@@ -986,9 +992,8 @@ async function main(): Promise<void> {
       [{ text: '📨 Messages: ' + (c.messageMode || 'Default'), data: pfx('cfg:messageMode') }],
       [
         {
-          text:
-            '🔧 Tools' + (globalCfg.excludedTools?.length ? ': ' + globalCfg.excludedTools.length + ' excluded' : ''),
-          data: pfx('cfg:tools-info'),
+          text: '🔧 Tools' + (c.excludedTools?.length ? ': ' + c.excludedTools.length + ' disabled' : ''),
+          data: pfx('cfg:tools'),
         },
       ],
       [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
@@ -999,6 +1004,55 @@ async function main(): Promise<void> {
     } else {
       await client.sendButtons(chatId, text, buttons);
     }
+  }
+
+  async function sendToolsMenu(chatId: string, editId: number) {
+    const c = cfg(chatId);
+    const pfx = (d: string) => `@${chatId}|${d}`;
+
+    // Get tool list - need a session
+    let tools: string[] = [];
+    const s = sessions.get(chatId);
+    if (s?.alive) {
+      try {
+        const r = await s.listTools();
+        tools = (r?.tools ?? []).map((t: any) => t.name).filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (!tools.length) {
+      await client.editButtons(
+        chatId,
+        editId,
+        '🔧 *Tools*\nSend a message first to start a session, then open Tools.',
+        [[{ text: '← Back', data: pfx('cfg:back') }]],
+      );
+      return;
+    }
+
+    const excluded = new Set(c.excludedTools ?? []);
+    // 2 tools per row
+    const buttons: any[][] = [];
+    for (let i = 0; i < tools.length; i += 2) {
+      buttons.push(
+        tools.slice(i, i + 2).map((t) => ({
+          text: t,
+          data: pfx('tool:' + t),
+          ...(excluded.has(t) ? {} : { style: 'success' }),
+        })),
+      );
+    }
+    buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
+
+    const excludedCount = excluded.size;
+    await client.editButtons(
+      chatId,
+      editId,
+      '🔧 *Tools* (' + tools.length + ')' + (excludedCount ? '\n' + excludedCount + ' disabled' : '\nAll enabled'),
+      buttons,
+    );
   }
 
   async function sendReasoningMenu(chatId: string, editId: number) {
@@ -1288,11 +1342,26 @@ async function main(): Promise<void> {
       if (s?.alive) s.messageMode = c.messageMode || undefined;
       return sendConfigMenu(chatId, msgId);
     }
-    if (data === 'cfg:tools-info') {
-      await client.sendMessage(
-        chatId,
-        'Edit `~/.copilot-remote/config.json` to configure:\n• `excludedTools`: \\[...\\]\n• `availableTools`: \\[...\\]',
-      );
+    if (data === 'cfg:tools') {
+      return sendToolsMenu(chatId, msgId);
+    }
+    if (data.startsWith('tool:')) {
+      const toolName = data.slice(5);
+      const c = cfg(chatId);
+      const excluded = new Set(c.excludedTools ?? []);
+      if (excluded.has(toolName)) {
+        excluded.delete(toolName);
+      } else {
+        excluded.add(toolName);
+      }
+      c.excludedTools = [...excluded];
+      setCfg(chatId, c);
+      // Re-render first (session still alive to list tools), then kill session
+      await sendToolsMenu(chatId, msgId);
+      // Kill existing session so next message picks up new tool config
+      const old = sessions.get(chatId);
+      if (old?.alive) await old.disconnect();
+      sessions.delete(chatId);
       return;
     }
     if (data.startsWith('model:')) {
