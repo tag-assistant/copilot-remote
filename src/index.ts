@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const pendingPerms = new Map<number, string>();
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
-  let cachedModels: string[] = [];
+  let cachedModels: any[] = []; // ModelInfo objects
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
@@ -867,22 +867,35 @@ async function main(): Promise<void> {
 
   async function sendReasoningMenu(chatId: string, editId: number) {
     const c = cfg(chatId);
-    const levels = ['none', 'low', 'medium', 'high', 'xhigh'];
+    // Find current model's supported reasoning efforts
+    const modelInfo = cachedModels.find((m) => (m.id ?? m.name) === c.model);
+    const supported: string[] = modelInfo?.supportedReasoningEfforts ?? [];
+    if (!supported.length) {
+      await client.editButtons(
+        chatId,
+        editId,
+        '🧠 *Reasoning Effort*\n⚠️ ' + c.model + ' does not support reasoning effort.',
+        [[{ text: '← Back', data: 'cfg:back' }]],
+      );
+      return;
+    }
     const labels: Record<string, string> = {
-      none: '⚪ Off',
       low: '🐇 Low',
       medium: '⚖️ Medium',
       high: '🧠 High',
       xhigh: '🔥 XHigh',
     };
+    const levels = ['none', ...supported];
+    const allLabels: Record<string, string> = { none: '⚪ Off', ...labels };
     const buttons = levels.map((l) => [
-      { text: (l === c.reasoningEffort ? '● ' : '') + labels[l], data: 'reason:' + l },
+      { text: (l === c.reasoningEffort ? '● ' : '') + (allLabels[l] ?? l), data: 'reason:' + l },
     ]);
+    const defaultNote = modelInfo?.defaultReasoningEffort ? ` (default: ${modelInfo.defaultReasoningEffort})` : '';
     buttons.push([{ text: '← Back', data: 'cfg:back' }]);
     await client.editButtons(
       chatId,
       editId,
-      '🧠 *Reasoning Effort*\nHigher = smarter but slower/costlier\n⚠️ Not all models support this:',
+      '🧠 *Reasoning Effort*' + defaultNote + '\nHigher = smarter but slower/costlier:',
       buttons,
     );
   }
@@ -930,15 +943,19 @@ async function main(): Promise<void> {
     const s = sessions.get(chatId);
     if (!cachedModels.length && s?.alive) {
       try {
-        cachedModels = (await s.listModels()).map((m) => (m as any).id ?? (m as any).name).filter(Boolean);
+        cachedModels = (await s.listModels()) as any[];
       } catch {
         /* ignore */
       }
     }
-    const models = cachedModels.length ? cachedModels : ['claude-sonnet-4', 'gpt-5.2', 'gemini-3-pro-preview'];
+    const modelIds = cachedModels.length
+      ? cachedModels.map((m) => m.id ?? m.name).filter(Boolean)
+      : ['claude-sonnet-4', 'gpt-5.2', 'gemini-3-pro-preview'];
     const buttons: { text: string; data: string }[][] = [];
-    for (let i = 0; i < models.length; i += 2) {
-      buttons.push(models.slice(i, i + 2).map((m) => ({ text: (m === c.model ? '● ' : '') + m, data: 'model:' + m })));
+    for (let i = 0; i < modelIds.length; i += 2) {
+      buttons.push(
+        modelIds.slice(i, i + 2).map((m) => ({ text: (m === c.model ? '● ' : '') + m, data: 'model:' + m })),
+      );
     }
     buttons.push([{ text: '← Back', data: 'cfg:back' }]);
     await client.editButtons(chatId, editId, '🤖 *Select Model*', buttons);
