@@ -71,7 +71,16 @@ function loadConfig() {
     allowedUsers: file.allowedUsers ?? process.env.COPILOT_REMOTE_ALLOWED_USERS?.split(',').filter(Boolean) ?? [],
     workDir: file.workDir ?? process.env.COPILOT_REMOTE_WORKDIR ?? process.cwd(),
     copilotBinary: file.copilotBinary ?? process.env.COPILOT_REMOTE_BINARY,
+    githubToken: process.env.GITHUB_TOKEN ?? resolveGhToken(),
   };
+}
+
+function resolveGhToken(): string | undefined {
+  try {
+    return execSync('gh auth token 2>/dev/null', { encoding: 'utf-8' }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ── Passthrough commands: just prompt Copilot with context ──
@@ -225,6 +234,7 @@ async function main(): Promise<void> {
         c.reasoningEffort !== 'none' ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
       agent: c.agent ?? undefined,
       topicContext: client.getTopicName?.(chatId),
+      githubToken: config.githubToken,
     };
 
     // Try to resume a saved session

@@ -104,7 +104,8 @@ export interface SessionOptions {
   autopilot?: boolean;
   agent?: string;
   reasoningEffort?: ReasoningEffort;
-  topicContext?: string; // e.g. "Fix auth bug" — injected into system prompt
+  topicContext?: string;
+  githubToken?: string;
 }
 
 export interface CopilotMessage {
@@ -178,6 +179,7 @@ export class Session extends EventEmitter {
 
     const clientOpts: CopilotClientOptions = { useStdio: true };
     if (opts.binary) clientOpts.cliPath = opts.binary;
+    if (opts.githubToken) clientOpts.githubToken = opts.githubToken;
 
     this.client = new CopilotClient(clientOpts);
     await this.client.start();
@@ -413,6 +415,7 @@ export class Session extends EventEmitter {
     if (!this.client) {
       const clientOpts: CopilotClientOptions = { useStdio: true };
       if (opts.binary) clientOpts.cliPath = opts.binary;
+      if (opts.githubToken) clientOpts.githubToken = opts.githubToken;
       this.client = new CopilotClient(clientOpts);
       await this.client.start();
     }
