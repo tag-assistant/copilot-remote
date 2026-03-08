@@ -520,17 +520,40 @@ async function main(): Promise<void> {
       thinkingText += t;
       schedEdit(); // thinking shows inline in the main streaming message
     };
+    let thinkingDone = false; // true once assistant.reasoning (final) fires
+    let pendingResponseText = ''; // buffer response deltas until thinking finishes streaming
+
+    const flushThinkingTransition = () => {
+      if (streamMsgId) {
+        client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
+        streamMsgId = null;
+        streamGeneration++;
+      }
+      thinkingText = '';
+      react(LIFECYCLE_REACTIONS.writing);
+      // Flush any buffered response text
+      if (pendingResponseText) {
+        responseText += pendingResponseText;
+        pendingResponseText = '';
+        schedEdit();
+      }
+    };
+
+    const onThinkingDone = () => {
+      thinkingDone = true;
+      // If response deltas already arrived, flush the transition now
+      if (pendingResponseText) flushThinkingTransition();
+    };
+
     const onDelta = (t: string) => {
-      // Thinking→response transition: delete thinking message immediately, don't wait for minInitialChars
+      // If still streaming thinking, buffer response until thinking_done
+      if (thinkingText && !thinkingDone) {
+        pendingResponseText += t;
+        return;
+      }
+      // Thinking finished — transition if needed
       if (thinkingText) {
-        if (streamMsgId) {
-          // Delete the thinking message right now (don't just track as stale)
-          client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
-          streamMsgId = null;
-          streamGeneration++;
-        }
-        thinkingText = '';
-        react(LIFECYCLE_REACTIONS.writing);
+        flushThinkingTransition();
       }
       if (!responseText) react(LIFECYCLE_REACTIONS.writing);
       responseText += t;
@@ -642,6 +665,7 @@ async function main(): Promise<void> {
 
     session.on('thinking', onThink);
     session.on('delta', onDelta);
+    session.on('thinking_done', onThinkingDone);
     session.on('tool_start', onToolStart);
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
@@ -658,6 +682,7 @@ async function main(): Promise<void> {
       }
       session.off('thinking', onThink);
       session.off('delta', onDelta);
+      session.off('thinking_done', onThinkingDone);
       session.off('tool_start', onToolStart);
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);
