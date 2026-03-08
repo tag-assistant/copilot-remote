@@ -97,8 +97,8 @@ export class TelegramClient implements Client {
       await next();
     });
 
-    // Text messages
-    this.bot.on('message:text', async (ctx) => {
+    // Text messages — fire-and-forget to enable parallel thread processing
+    this.bot.on('message:text', (ctx) => {
       const threadId = ctx.message.message_thread_id;
       if (threadId) {
         const topicKey = ctx.chat.id + ':' + threadId;
@@ -108,8 +108,9 @@ export class TelegramClient implements Client {
         }
       }
 
-      log.debug(`[telegram] dispatch ${ctx.chatId}:${ctx.message.message_thread_id ?? 'dm'} t=${Date.now()}`);
-      this.onMessage?.(
+      log.debug(`[telegram] dispatch ${ctx.chatId}:${threadId ?? 'dm'} t=${Date.now()}`);
+      // Do NOT await — let handlePrompt run in background so other updates process immediately
+      void this.onMessage?.(
         ctx.message.text,
         String(ctx.chatId),
         ctx.message.message_id,
