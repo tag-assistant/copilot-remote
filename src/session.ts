@@ -54,9 +54,12 @@ export class CopilotSession extends EventEmitter {
   }
 
   async start(options: SessionOptions): Promise<void> {
-    const shell = options.shell ?? 'copilot';
+    const copilotBin = options.shell ?? 'copilot';
 
-    this.ptyProcess = pty.spawn(shell, [], {
+    // Spawn via login shell to pick up PATH/nvm/etc
+    const userShell = process.env.SHELL ?? '/bin/zsh';
+
+    this.ptyProcess = pty.spawn(userShell, ['-l', '-c', copilotBin], {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
