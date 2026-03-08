@@ -29,7 +29,7 @@ export const DEFAULT_CONFIG: ChatConfig = {
   mode: 'interactive',
   model: 'claude-sonnet-4',
   agent: null,
-  reasoningEffort: 'none',
+  reasoningEffort: '',
   autoApprove: {
     read: true,
     shell: false,

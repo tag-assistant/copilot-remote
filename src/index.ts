@@ -267,7 +267,7 @@ async function main(): Promise<void> {
       model: c.model,
       autopilot: c.autopilot,
       reasoningEffort:
-        c.reasoningEffort !== 'none' ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
+        c.reasoningEffort ? (c.reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh') : undefined,
       agent: c.agent ?? undefined,
       topicContext: client.getTopicName?.(chatId),
       githubToken: config.githubToken,
@@ -313,7 +313,7 @@ async function main(): Promise<void> {
       // If reasoning effort not supported, retry without it
       if (msg.includes('reasoning effort')) {
         const c = cfg(chatId);
-        c.reasoningEffort = 'none';
+        c.reasoningEffort = '';
         setCfg(chatId, c);
         try {
           session = await getSession(chatId);
@@ -967,7 +967,7 @@ async function main(): Promise<void> {
     const buttons = [
       [modeBtn('interactive'), modeBtn('plan'), modeBtn('autopilot')],
       [{ text: '🤖 Change Model', data: pfx('cfg:modelPicker') }],
-      [{ text: '🧠 Reasoning: ' + c.reasoningEffort, data: pfx('cfg:reasoning') }],
+      [{ text: '🧠 Reasoning: ' + (c.reasoningEffort || 'Default'), data: pfx('cfg:reasoning') }],
       [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
       [{ text: '🎨 Display', data: pfx('cfg:display') }],
     ];
@@ -999,10 +999,11 @@ async function main(): Promise<void> {
       high: 'High',
       xhigh: 'XHigh',
     };
-    const levels = ['none', ...supported];
-    const allLabels: Record<string, string> = { none: 'Off', ...labels };
+    const levels = ['', ...supported];
+    const allLabels: Record<string, string> = { '': 'Default', ...labels };
+    const current = c.reasoningEffort || '';
     const buttons = levels.map((l) => [
-      { text: allLabels[l] ?? l, data: pfx('reason:' + l), ...(l === c.reasoningEffort ? { style: 'success' } : {}) },
+      { text: allLabels[l] ?? l, data: pfx('reason:' + (l || 'default')), ...(l === current ? { style: 'success' } : {}) },
     ]);
     const defaultNote = modelInfo?.defaultReasoningEffort ? ` (default: ${modelInfo.defaultReasoningEffort})` : '';
     buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
@@ -1208,7 +1209,7 @@ async function main(): Promise<void> {
       return;
     }
     if (data.startsWith('reason:')) {
-      const level = data.slice(7);
+      const level = data.slice(7) === 'default' ? '' : data.slice(7);
       const c = cfg(chatId);
       c.reasoningEffort = level;
       setCfg(chatId, c);
