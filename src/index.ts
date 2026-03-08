@@ -1456,14 +1456,16 @@ async function main(): Promise<void> {
   client.onInlineQuery = async (queryId, query) => {
     if (!client.answerInlineQuery) return;
     // Try to get a one-shot answer from Copilot within Telegram's inline timeout
+    let inlineSession: Session | null = null;
     try {
-      const s = new Session();
-      await s.start({ cwd: config.workDir, binary: bin, githubToken: config.githubToken });
+      inlineSession = new Session();
+      await inlineSession.start({ cwd: config.workDir, binary: bin, githubToken: config.githubToken });
       const res = await Promise.race([
-        s.send(query),
+        inlineSession.send(query),
         new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000)),
       ]);
-      s.kill();
+      inlineSession.kill();
+      inlineSession = null;
       if (res?.content) {
         const answer = res.content.slice(0, 4000);
         const title = answer.slice(0, 60).replace(/\n/g, ' ');
@@ -1480,6 +1482,9 @@ async function main(): Promise<void> {
       }
     } catch {
       // Timeout or error — fall back to echo
+    } finally {
+      // Ensure the session process is always cleaned up (e.g. on timeout)
+      inlineSession?.kill();
     }
     await client.answerInlineQuery(queryId, [
       {
