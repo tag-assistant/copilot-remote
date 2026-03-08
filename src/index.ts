@@ -409,7 +409,6 @@ async function main(): Promise<void> {
   client.onMessage = async (text, chatId, messageId, replyText, replyToMsgId, threadId) => {
     const key = sessionKey(chatId, threadId);
     if (threadId) threadMap.set(key, threadId);
-    log.info('[msg]', key, text.slice(0, 50));
 
     // Reply to permission message
     if (replyToMsgId && pendingPerms.has(replyToMsgId)) {

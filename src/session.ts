@@ -119,32 +119,22 @@ export class Session extends EventEmitter {
         this.emit('usage', d);
         break;
       case 'tool.execution_start':
-        log.info('[tool]', d.name ?? d.toolName, (d.arguments ?? '').toString().slice(0, 100));
         this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments });
         break;
       case 'tool.execution_complete':
-        log.info('[tool]', d.name ?? d.toolName, d.exitCode === 0 || d.success !== false ? '✓' : '✗');
         this.emit('tool_complete', {
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
         });
         break;
       case 'permission.requested':
-        log.info('[perm]', d.kind, d.tool ?? '', (d.command ?? d.path ?? '').toString().slice(0, 80));
         this.emit('permission_request', d);
         break;
       case 'session.idle':
         this.emit('idle');
         break;
       case 'session.error':
-        log.error('[session]', d.message ?? 'Unknown error');
         this.emit('error', d.message ?? 'Unknown error');
-        break;
-      default:
-        // Only log non-spammy events
-        if (!e.type.includes('delta') && !e.type.includes('reasoning') && e.type !== 'session.usage_info') {
-          log.sdk(e.type);
-        }
         break;
     }
   }
