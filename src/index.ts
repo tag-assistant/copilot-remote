@@ -382,9 +382,9 @@ async function main(): Promise<void> {
       }
       return;
     }
-    const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e) : async () => {};
-    await react('🤔');
     await client.sendTyping(chatId);
+    const react = c.showReactions ? (e: string) => client.setReaction(chatId, msgId, e).then(() => client.sendTyping(chatId)) : async () => {};
+    await react('🤔');
     // Keep typing indicator alive every 4s while processing
     const typingInterval = setInterval(() => client.sendTyping(chatId), 4000);
 
