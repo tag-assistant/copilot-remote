@@ -365,6 +365,7 @@ async function main(): Promise<void> {
     let useDraft = !!client.sendDraft; // try draft mode if client supports it
     let thinkingText = '',
       responseText = '';
+    let intentText = '';
     const toolLines: string[] = [];
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
@@ -372,6 +373,7 @@ async function main(): Promise<void> {
 
     const display = () => {
       const p: string[] = [];
+      if (intentText) p.push('🎯 *' + intentText + '*');
       if (thinkingText) {
         const s = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
         p.push('💭 _' + s.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&') + '_');
@@ -422,6 +424,12 @@ async function main(): Promise<void> {
     const onToolStart = (t: ToolEvent) => {
       client.sendTyping(chatId);
       react('👨‍💻');
+      // report_intent: show as headline, not a tool line
+      if (t.toolName === 'report_intent') {
+        const intent = t.arguments?.intent ?? t.arguments?.message ?? '';
+        if (intent) { intentText = String(intent); schedEdit(); }
+        return;
+      }
       if (!c.showTools) return;
       const label = TOOL_LABELS[t.toolName] ?? '🔧 ' + t.toolName;
       let detail = '';
@@ -431,6 +439,7 @@ async function main(): Promise<void> {
       schedEdit();
     };
     const onToolEnd = (t: ToolEvent) => {
+      if (t.toolName === 'report_intent') return; // already handled
       if (!c.showTools || !toolLines.length) return;
       toolLines[toolLines.length - 1] += t.success !== false ? ' ✓' : ' ✗';
       schedEdit();
