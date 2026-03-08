@@ -67,6 +67,7 @@ async function main(): Promise<void> {
     autopilot: boolean;
     model: string;
     agent: string | null;
+    reasoningEffort: string;
     autoApprove: Record<PermKind, boolean>;
   }
   const defaultCfg: ChatConfig = {
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
     autopilot: false,
     model: 'claude-sonnet-4',
     agent: null,
+    reasoningEffort: 'medium',
     autoApprove: {
       read: true, // reading files is safe
       shell: false,
@@ -110,6 +112,7 @@ async function main(): Promise<void> {
       binary: bin,
       model: c.model,
       autopilot: c.autopilot,
+      reasoningEffort: c.reasoningEffort as any,
       agent: c.agent ?? undefined,
     };
 
@@ -278,11 +281,26 @@ async function main(): Promise<void> {
       if (id) pendingPerms.set(id, chatId);
     };
 
+    const pendingInputs = new Map<number, string>(); // msgId → chatId for user input answers
+    const onUserInput = async (req: any) => {
+      const question = req.question ?? req;
+      const choices = req.choices as string[] | undefined;
+      if (choices?.length) {
+        const buttons = choices.map((c: string) => [{ text: c, data: 'input:' + c }]);
+        const id = await client.sendButtons(chatId, '❓ ' + question, buttons);
+        if (id) pendingInputs.set(id, chatId);
+      } else {
+        const id = await client.sendMessage(chatId, '❓ ' + question + '\n\n_Reply to this message to answer_');
+        if (id) pendingInputs.set(id, chatId);
+      }
+    };
+
     session.on('thinking', onThink);
     session.on('delta', onDelta);
     session.on('tool_start', onToolStart);
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
+    session.on('user_input_request', onUserInput);
 
     const cleanup = () => {
       if (timer) {
@@ -294,6 +312,7 @@ async function main(): Promise<void> {
       session.off('tool_start', onToolStart);
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);
+      session.off('user_input_request', onUserInput);
     };
 
     try {
@@ -758,6 +777,7 @@ async function main(): Promise<void> {
         { text: modeLabel('autopilot')!, data: 'mode:autopilot' },
       ],
       [{ text: '🤖 Change Model', data: 'cfg:modelPicker' }],
+      [{ text: '🧠 Reasoning: ' + c.reasoningEffort, data: 'cfg:reasoning' }],
       [{ text: '🔒 Tool Security', data: 'cfg:security' }],
       [{ text: '🎨 Display', data: 'cfg:display' }],
     ];
@@ -766,6 +786,17 @@ async function main(): Promise<void> {
     } else {
       await client.sendButtons(chatId, text, buttons);
     }
+  }
+
+  async function sendReasoningMenu(chatId: string, editId: number) {
+    const c = cfg(chatId);
+    const levels = ['low', 'medium', 'high', 'xhigh'];
+    const labels: Record<string, string> = { low: '🐇 Low', medium: '⚖️ Medium', high: '🧠 High', xhigh: '🔥 XHigh' };
+    const buttons = levels.map((l) => [
+      { text: (l === c.reasoningEffort ? '● ' : '') + labels[l], data: 'reason:' + l },
+    ]);
+    buttons.push([{ text: '← Back', data: 'cfg:back' }]);
+    await client.editButtons(chatId, editId, '🧠 *Reasoning Effort*\nHigher = smarter but slower/costlier:', buttons);
   }
 
   async function sendDisplayMenu(chatId: string, editId: number) {
@@ -841,6 +872,32 @@ async function main(): Promise<void> {
     }
   };
 
+  // ── File handler — download and pass to Copilot ──
+  client.onFile = async (fileId, fileName, caption, chatId, msgId) => {
+    if (!client.getFileUrl) return;
+    const url = await client.getFileUrl(fileId);
+    if (!url) {
+      await client.sendMessage(chatId, '❌ Could not download file.');
+      return;
+    }
+    // Download to temp and tell Copilot about it
+    try {
+      const res = await fetch(url);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      const tmpDir = '/tmp/copilot-remote';
+      const { mkdirSync, writeFileSync } = await import('fs');
+      mkdirSync(tmpDir, { recursive: true });
+      const tmpPath = tmpDir + '/' + fileName;
+      writeFileSync(tmpPath, buffer);
+      const prompt = caption
+        ? caption + '\n\n[Attached file: ' + tmpPath + ']'
+        : 'I sent you a file: ' + tmpPath + '\nPlease read and analyze it.';
+      await handlePrompt(chatId, msgId, prompt);
+    } catch (e) {
+      await client.sendMessage(chatId, '❌ ' + String(e));
+    }
+  };
+
   client.onCallback = async (_, data, chatId, msgId) => {
     if (data.startsWith('perm:')) {
       const s = sessions.get(chatId);
@@ -868,6 +925,42 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (data.startsWith('reason:')) {
+      const level = data.slice(7);
+      const c = cfg(chatId);
+      c.reasoningEffort = level;
+      setCfg(chatId, c);
+      // Restart to apply
+      const old = sessions.get(chatId);
+      const savedId = old?.sessionId ?? sessionStore.get(chatId)?.sessionId;
+      if (old?.alive) await old.disconnect();
+      sessions.delete(chatId);
+      if (savedId) {
+        const s = new Session();
+        try {
+          await s.resume(savedId, {
+            cwd: workDir(chatId),
+            binary: bin,
+            model: c.model,
+            autopilot: c.autopilot,
+            reasoningEffort: level as any,
+          });
+          sessions.set(chatId, s);
+        } catch {
+          sessionStore.delete(chatId);
+          await getSession(chatId);
+        }
+      }
+      return sendConfigMenu(chatId, msgId);
+    }
+    if (data.startsWith('input:')) {
+      const answer = data.slice(6);
+      const s = sessions.get(chatId);
+      if (s?.alive) s.answerInput(answer);
+      await client.editButtons(chatId, msgId, '❓ → ' + answer, []);
+      return;
+    }
+    if (data === 'cfg:reasoning') return sendReasoningMenu(chatId, msgId);
     if (data === 'cfg:display') return sendDisplayMenu(chatId, msgId);
     if (data === 'cfg:security') return sendSecurityMenu(chatId, msgId);
     if (data === 'cfg:modelPicker') return sendModelPicker(chatId, msgId);

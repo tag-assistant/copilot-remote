@@ -18,6 +18,7 @@ export interface SessionOptions {
   model?: string;
   autopilot?: boolean;
   agent?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 export interface CopilotMessage {
@@ -53,17 +54,8 @@ export class Session extends EventEmitter {
     this._autopilot = v;
   }
 
-  async start(opts: SessionOptions): Promise<void> {
-    this.cwd = opts.cwd;
-    this._autopilot = opts.autopilot ?? false;
-
-    const clientOpts: Record<string, any> = { useStdio: true };
-    if (opts.binary) clientOpts.cliPath = opts.binary;
-
-    this.client = new CopilotClient(clientOpts);
-    await this.client.start();
-
-    const config: SessionConfig = {
+  private buildConfig(opts: SessionOptions): Partial<SessionConfig> {
+    return {
       clientName: 'copilot-remote',
       streaming: true,
       workingDirectory: this.cwd,
@@ -79,10 +71,23 @@ export class Session extends EventEmitter {
         ].join('\n'),
       },
       onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
+      onUserInputRequest: (req: any) => this.handleUserInput(req),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort as any } : {}),
     };
-    if (opts.model) config.model = opts.model;
+  }
 
-    this.session = await this.client.createSession(config);
+  async start(opts: SessionOptions): Promise<void> {
+    this.cwd = opts.cwd;
+    this._autopilot = opts.autopilot ?? false;
+
+    const clientOpts: Record<string, any> = { useStdio: true };
+    if (opts.binary) clientOpts.cliPath = opts.binary;
+
+    this.client = new CopilotClient(clientOpts);
+    await this.client.start();
+
+    this.session = await this.client.createSession(this.buildConfig(opts) as SessionConfig);
     this._alive = true;
     this.session.on((e: SessionEvent) => this.handleEvent(e));
   }
@@ -139,6 +144,25 @@ export class Session extends EventEmitter {
         resolve({ kind: 'denied-interactively-by-user' } as PermissionRequestResult);
       }, 120_000);
     });
+  }
+
+  private async handleUserInput(req: any): Promise<{ answer: string; wasFreeform: boolean }> {
+    this.emit('user_input_request', req);
+    log.debug('User input request:', req.question);
+    return new Promise<{ answer: string; wasFreeform: boolean }>((resolve) => {
+      const handler = (answer: string) => {
+        resolve({ answer, wasFreeform: !req.choices?.length });
+      };
+      this.once('user_input_response', handler);
+      setTimeout(() => {
+        this.off('user_input_response', handler);
+        resolve({ answer: '', wasFreeform: true }); // Empty response on timeout
+      }, 300_000); // 5 min timeout for user questions
+    });
+  }
+
+  answerInput(answer: string) {
+    this.emit('user_input_response', answer);
   }
 
   // ── Core ──
@@ -292,23 +316,7 @@ export class Session extends EventEmitter {
       await this.client.start();
     }
 
-    this.session = await this.client.resumeSession(sessionId, {
-      clientName: 'copilot-remote',
-      streaming: true,
-      workingDirectory: this.cwd,
-      systemMessage: {
-        mode: 'append',
-        content: [
-          'You are being accessed via a Telegram bot bridge called copilot-remote.',
-          'The user is chatting with you from their phone. Keep responses concise but complete.',
-          'You have full access to the filesystem, shell, and all tools. Use them proactively.',
-          "When asked to do something, do it — don't just explain how.",
-          'Show your work: mention files you read, commands you ran, changes you made.',
-          'Format responses with markdown (bold, code blocks, lists) — it renders in Telegram.',
-        ].join('\n'),
-      },
-      onPermissionRequest: this._autopilot ? approveAll : (req: PermissionRequest) => this.handlePermission(req),
-    });
+    this.session = await this.client.resumeSession(sessionId, this.buildConfig(opts) as any);
     this._alive = true;
     this.session.on((e: SessionEvent) => this.handleEvent(e));
   }

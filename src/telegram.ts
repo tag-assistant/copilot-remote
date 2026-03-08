@@ -19,10 +19,27 @@ export class TelegramBridge {
   private offset = 0;
   private polling = false;
   private onMessage:
-    | ((text: string, chatId: string, messageId: number, replyText?: string, replyToMsgId?: number) => void)
+    | ((
+        text: string,
+        chatId: string,
+        messageId: number,
+        replyText?: string,
+        replyToMsgId?: number,
+        threadId?: number,
+      ) => void)
     | null = null;
   private onCallback: ((callbackId: string, data: string, chatId: string, messageId: number) => void) | null = null;
   private onReaction: ((emoji: string, chatId: string, messageId: number) => void) | null = null;
+  private onFile:
+    | ((
+        fileId: string,
+        fileName: string,
+        caption: string,
+        chatId: string,
+        messageId: number,
+        threadId?: number,
+      ) => void)
+    | null = null;
   private pairedUser: string | null = null;
 
   constructor(private config: TelegramConfig) {
@@ -40,6 +57,9 @@ export class TelegramBridge {
   }
   setReactionHandler(handler: typeof this.onReaction): void {
     this.onReaction = handler;
+  }
+  setFileHandler(handler: typeof this.onFile): void {
+    this.onFile = handler;
   }
 
   async startPolling(): Promise<void> {
@@ -74,7 +94,20 @@ export class TelegramBridge {
               msg.message_id,
               msg.reply_to_message?.text,
               msg.reply_to_message?.message_id,
+              msg.message_thread_id,
             );
+          } else if (update.message && (update.message.photo || update.message.document)) {
+            const msg = update.message;
+            const userId = String(msg.from?.id);
+            if (userId !== this.pairedUser) continue;
+
+            // Get file_id: largest photo or document
+            const fileId = msg.document?.file_id ?? msg.photo?.[msg.photo.length - 1]?.file_id;
+            const fileName = msg.document?.file_name ?? 'photo.jpg';
+            const caption = msg.caption ?? '';
+            if (fileId) {
+              this.onFile?.(fileId, fileName, caption, String(msg.chat.id), msg.message_id, msg.message_thread_id);
+            }
           }
 
           if (update.callback_query) {
@@ -213,6 +246,62 @@ export class TelegramBridge {
     await this.api('setMessageReaction', { chat_id: chatId, message_id: messageId, reaction: [] }).catch(() => {
       /* ignore */
     });
+  }
+
+  // ── File operations ──
+
+  async getFileUrl(fileId: string): Promise<string | null> {
+    try {
+      const res = await this.api('getFile', { file_id: fileId });
+      const filePath = res.result?.file_path;
+      if (!filePath) return null;
+      return 'https://api.telegram.org/file/bot' + this.config.botToken + '/' + filePath;
+    } catch {
+      return null;
+    }
+  }
+
+  async sendDocument(chatId: string | number, url: string, filename: string, caption?: string): Promise<number | null> {
+    const res = await this.api('sendDocument', {
+      chat_id: chatId,
+      document: url,
+      caption: caption ?? filename,
+    }).catch(() => null);
+    return res?.result?.message_id ?? null;
+  }
+
+  async sendPhoto(chatId: string | number, url: string, caption?: string): Promise<number | null> {
+    const res = await this.api('sendPhoto', {
+      chat_id: chatId,
+      photo: url,
+      ...(caption ? { caption } : {}),
+    }).catch(() => null);
+    return res?.result?.message_id ?? null;
+  }
+
+  // ── Forum topics ──
+
+  async createForumTopic(chatId: string | number, name: string): Promise<number | null> {
+    try {
+      const res = await this.api('createForumTopic', { chat_id: chatId, name });
+      return res.result?.message_thread_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async deleteForumTopic(chatId: string | number, threadId: number): Promise<void> {
+    await this.api('deleteForumTopic', { chat_id: chatId, message_thread_id: threadId }).catch(() => {
+      /* ignore */
+    });
+  }
+
+  async pinMessage(chatId: string | number, messageId: number): Promise<void> {
+    await this.api('pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true }).catch(
+      () => {
+        /* ignore */
+      },
+    );
   }
 
   // ── Bot commands ──

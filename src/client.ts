@@ -33,8 +33,33 @@ export interface Client {
   sendDraft?(chatId: string, draftId: number, text: string, threadId?: number): Promise<boolean>;
   allocateDraftId?(): number;
 
+  // File operations (optional)
+  getFileUrl?(fileId: string): Promise<string | null>;
+  sendDocument?(chatId: string, url: string, filename: string, caption?: string): Promise<number | null>;
+  sendPhoto?(chatId: string, url: string, caption?: string): Promise<number | null>;
+
+  // Forum topics (optional)
+  createForumTopic?(chatId: string, name: string): Promise<number | null>;
+  deleteForumTopic?(chatId: string, threadId: number): Promise<void>;
+  pinMessage?(chatId: string, messageId: number): Promise<void>;
+
   // Event handlers (set by bridge)
-  onMessage?: (text: string, chatId: string, msgId: number, replyText?: string, replyToMsgId?: number) => Promise<void>;
+  onMessage?: (
+    text: string,
+    chatId: string,
+    msgId: number,
+    replyText?: string,
+    replyToMsgId?: number,
+    threadId?: number,
+  ) => Promise<void>;
   onCallback?: (callbackId: string, data: string, chatId: string, msgId: number) => Promise<void>;
   onReaction?: (emoji: string, chatId: string, msgId: number) => Promise<void>;
+  onFile?: (
+    fileId: string,
+    fileName: string,
+    caption: string,
+    chatId: string,
+    msgId: number,
+    threadId?: number,
+  ) => Promise<void>;
 }

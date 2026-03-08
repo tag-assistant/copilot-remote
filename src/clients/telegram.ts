@@ -21,6 +21,9 @@ export class TelegramClient implements Client {
     this.bridge.setReactionHandler((emoji, chatId, msgId) => {
       this.onReaction?.(emoji, chatId, msgId);
     });
+    this.bridge.setFileHandler((fileId, fileName, caption, chatId, msgId, threadId) => {
+      this.onFile?.(fileId, fileName, caption, chatId, msgId, threadId);
+    });
 
     // Register bot command menu
     await this.bridge.setMyCommands([
@@ -69,8 +72,27 @@ export class TelegramClient implements Client {
   allocateDraftId() {
     return this.bridge.allocateDraftId();
   }
+  getFileUrl(fileId: string) {
+    return this.bridge.getFileUrl(fileId);
+  }
+  sendDocument(chatId: string, url: string, filename: string, caption?: string) {
+    return this.bridge.sendDocument(chatId, url, filename, caption);
+  }
+  sendPhoto(chatId: string, url: string, caption?: string) {
+    return this.bridge.sendPhoto(chatId, url, caption);
+  }
+  createForumTopic(chatId: string, name: string) {
+    return this.bridge.createForumTopic(chatId, name);
+  }
+  deleteForumTopic(chatId: string, threadId: number) {
+    return this.bridge.deleteForumTopic(chatId, threadId);
+  }
+  pinMessage(chatId: string, messageId: number) {
+    return this.bridge.pinMessage(chatId, messageId);
+  }
 
   onMessage?: Client['onMessage'];
   onCallback?: Client['onCallback'];
   onReaction?: Client['onReaction'];
+  onFile?: Client['onFile'];
 }
