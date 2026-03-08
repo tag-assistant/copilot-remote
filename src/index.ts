@@ -393,6 +393,7 @@ async function main(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let lastUsage: any = null;
     const toolLines: string[] = [];
+    let activeToolStatus = ''; // current tool being executed (always shown)
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
     const THROTTLE = useDraft ? 400 : 800; // drafts can update faster, edits throttled to avoid rate limits
@@ -405,6 +406,8 @@ async function main(): Promise<void> {
         p.push('💭 _' + s.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&') + '_');
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
+      // Show active tool status when no response text yet (prevents silent periods)
+      if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
       if (responseText) p.push(responseText);
       return p.join('\n\n');
     };
@@ -1511,8 +1514,7 @@ async function main(): Promise<void> {
       const s = sessions.get(chatId);
       if (!s?.alive) return;
       if (data === 'perm:all') {
-        // Approve all pending prompts in this chat (doesn't switch mode)
-        s.approve();
+        // Approve all pending permission prompts in this chat
         for (const [id, cid] of pendingPerms) {
           if (cid === chatId) {
             s.approve();
