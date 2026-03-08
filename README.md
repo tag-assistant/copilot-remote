@@ -7,29 +7,12 @@ Control GitHub Copilot from Telegram. Full SDK integration — streaming, tool c
 ## Setup
 
 ```bash
-# 1. Authenticate with GitHub (needs Copilot license)
-gh auth login
-
-# 2. Create config
-mkdir -p ~/.copilot-remote
-cat > ~/.copilot-remote/config.json << 'EOF'
-{
-  "botToken": "your-telegram-bot-token",
-  "workDir": "/path/to/your/projects"
-}
-EOF
-
-# 3. Run
 npx copilot-remote
 ```
 
-### Auth Priority
+On first run, you'll be prompted for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather)). Config is saved to `~/.copilot-remote/config.json`.
 
-1. `githubToken` in config.json
-2. `GITHUB_TOKEN` env var
-3. `gh auth token` (auto-detected)
-
-The token must belong to an account with an active **GitHub Copilot license**.
+GitHub auth is auto-detected from `gh auth login`. If the logged-in account doesn't have a Copilot license, set `githubToken` in config or `GITHUB_TOKEN` env.
 
 ## Features
 

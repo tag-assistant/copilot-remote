@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
+import * as readline from 'readline';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
@@ -61,18 +62,52 @@ function loadConfig() {
   const cfgPath = fs.existsSync(homeCfg) ? homeCfg : fs.existsSync(cwdCfg) ? cwdCfg : null;
   const file = cfgPath ? JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) : {};
 
-  const botToken = file.botToken ?? process.env.COPILOT_REMOTE_BOT_TOKEN;
-  if (!botToken) {
-    log.error('Missing botToken in ~/.copilot-remote/config.json or COPILOT_REMOTE_BOT_TOKEN env');
-    process.exit(1);
-  }
+  // CLI args override config: --bot-token xxx
+  const args = process.argv.slice(2);
+  const botTokenIdx = args.indexOf('--bot-token');
+  const botTokenArg = botTokenIdx >= 0 ? args[botTokenIdx + 1] : undefined;
+
+  const botToken = botTokenArg ?? file.botToken ?? process.env.COPILOT_REMOTE_BOT_TOKEN;
   return {
     botToken,
     allowedUsers: file.allowedUsers ?? process.env.COPILOT_REMOTE_ALLOWED_USERS?.split(',').filter(Boolean) ?? [],
     workDir: file.workDir ?? process.env.COPILOT_REMOTE_WORKDIR ?? process.cwd(),
     copilotBinary: file.copilotBinary ?? process.env.COPILOT_REMOTE_BINARY,
     githubToken: file.githubToken ?? process.env.GITHUB_TOKEN ?? resolveGhToken(),
+    _cfgPath: cfgPath ?? homeCfg,
+    _file: file,
   };
+}
+
+async function prompt(question: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) =>
+    rl.question(question, (a) => {
+      rl.close();
+      resolve(a.trim());
+    }),
+  );
+}
+
+async function ensureBotToken(config: ReturnType<typeof loadConfig>): Promise<string> {
+  if (config.botToken) return config.botToken;
+
+  // Interactive first-run setup
+  console.log('\n🤖 copilot-remote — first-time setup\n');
+  console.log('You need a Telegram bot token. Get one from @BotFather: https://t.me/BotFather\n');
+  const token = await prompt('Paste your bot token: ');
+  if (!token) {
+    console.error('No token provided. Exiting.');
+    process.exit(1);
+  }
+
+  // Save to config
+  const cfgDir = path.dirname(config._cfgPath);
+  fs.mkdirSync(cfgDir, { recursive: true });
+  const newFile = { ...config._file, botToken: token };
+  fs.writeFileSync(config._cfgPath, JSON.stringify(newFile, null, 2) + '\n', { mode: 0o600 });
+  console.log(`\n✅ Saved to ${config._cfgPath}\n`);
+  return token;
 }
 
 function resolveGhToken(): string | undefined {
@@ -146,11 +181,12 @@ const MODE_ICONS: Record<string, string> = {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const botToken = await ensureBotToken(config);
   const bin = config.copilotBinary ?? findBin('copilot');
 
   log.info('⚡ Copilot Remote v' + version + ' | dir: ' + config.workDir);
 
-  const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
+  const client: Client = new TelegramClient({ botToken, allowedUsers: config.allowedUsers });
 
   // ── Per-chat state ──
   // ── Config ──
