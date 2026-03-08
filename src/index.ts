@@ -1090,8 +1090,8 @@ async function main(): Promise<void> {
           break;
         }
         try {
+          client.setReaction(chatId, msgId, '👍').catch(() => {});
           client.sendTyping(chatId);
-          
           const r = await s.compact();
           const info = contextInfoMap.get(chatId);
           const pct = info ? ' (' + Math.round((info.currentTokens / info.tokenLimit) * 100) + '% used)' : '';
