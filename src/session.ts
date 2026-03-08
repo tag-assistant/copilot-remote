@@ -436,7 +436,27 @@ export class Session extends EventEmitter {
       if (this._messageMode) sendOpts.mode = this._messageMode;
       if (attachments?.length) sendOpts.attachments = attachments;
 
-      const result = await Promise.race([this.session!.sendAndWait(sendOpts, 300_000), errorPromise]);
+      // Idle timeout: reset on every SDK event so long-running tool calls don't get killed.
+      // Absolute timeout at 10 min, idle timeout at 2 min of no activity.
+      const ABSOLUTE_TIMEOUT = 600_000; // 10 min
+      const IDLE_TIMEOUT = 120_000; // 2 min of no events
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const idlePromise = new Promise<never>((_resolve, reject) => {
+        const resetIdle = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => reject(new Error('Session idle timeout — no activity for 2 minutes')), IDLE_TIMEOUT);
+        };
+        resetIdle();
+        // Reset on any SDK event
+        this.session!.on((/* event */) => { resetIdle(); });
+      });
+
+      const result = await Promise.race([
+        this.session!.sendAndWait(sendOpts, ABSOLUTE_TIMEOUT),
+        errorPromise,
+        idlePromise,
+      ]);
+      if (idleTimer) clearTimeout(idleTimer);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
       const resultObj = result as Record<string, unknown>;
