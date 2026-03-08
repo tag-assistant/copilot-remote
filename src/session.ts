@@ -229,13 +229,26 @@ export class Session extends EventEmitter {
         this.emit('delta', d.content ?? d.text ?? '');
         break;
       case 'assistant.reasoning_delta':
-        this.emit('thinking', d.content ?? d.text ?? '');
+        this.emit('thinking', d.deltaContent ?? d.content ?? d.text ?? '');
         break;
       case 'assistant.message':
         this.emit('message', d.content ?? '');
         break;
       case 'assistant.usage':
         this.emit('usage', d);
+        break;
+      case 'assistant.turn_start':
+        this.emit('turn_start', { turnId: d.turnId, interactionId: d.interactionId });
+        break;
+      case 'assistant.turn_end':
+        this.emit('turn_end', { turnId: d.turnId });
+        break;
+      case 'session.usage_info':
+        this.emit('context_info', {
+          tokenLimit: d.tokenLimit,
+          currentTokens: d.currentTokens,
+          messagesLength: d.messagesLength,
+        });
         break;
       case 'tool.execution_start':
         this.emit('tool_start', { toolName: d.name ?? d.toolName, arguments: d.arguments });
@@ -244,6 +257,7 @@ export class Session extends EventEmitter {
         this.emit('tool_complete', {
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
+          detailedContent: d.result?.detailedContent ?? d.result?.content,
         });
         break;
       case 'permission.requested':

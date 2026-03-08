@@ -33,6 +33,7 @@ interface ToolEvent {
   toolName: string;
   arguments?: Record<string, string>;
   success?: boolean;
+  detailedContent?: string;
 }
 
 /** User input request from the agent */
@@ -366,6 +367,9 @@ async function main(): Promise<void> {
     let thinkingText = '',
       responseText = '';
     let intentText = '';
+    let contextInfo = '';
+    let turnCount = 0;
+    let lastUsage: { model?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; duration?: number } | null = null;
     const toolLines: string[] = [];
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
@@ -380,6 +384,8 @@ async function main(): Promise<void> {
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
       if (responseText) p.push(responseText);
+      // Context bar at bottom during streaming (before final)
+      if (contextInfo && !responseText) p.push(contextInfo);
       return p.join('\n\n');
     };
 
@@ -500,6 +506,23 @@ async function main(): Promise<void> {
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
     session.on('user_input_request', onUserInput);
+    session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
+      const pct = Math.round((info.currentTokens / info.tokenLimit) * 100);
+      contextInfo = `📊 \`${pct}% context · ${info.messagesLength} msgs\``;
+    });
+    session.on('usage', (u: Record<string, unknown>) => {
+      lastUsage = {
+        model: u.model as string,
+        inputTokens: u.inputTokens as number,
+        outputTokens: u.outputTokens as number,
+        cacheReadTokens: u.cacheReadTokens as number,
+        duration: u.duration as number,
+      };
+    });
+    session.on('turn_start', (t: { turnId: string }) => {
+      const n = parseInt(t.turnId, 10);
+      if (n > 0) { turnCount = n; schedEdit(); }
+    });
     session.on('permission_timeout', () => {
       // Clean up expired permission prompts for this chat
       for (const [id, cid] of pendingPerms) {
@@ -532,16 +555,19 @@ async function main(): Promise<void> {
       clearInterval(typingInterval);
 
       let final = res.content;
-      if (c.showUsage) {
-        try {
-          const q = await session.getQuota();
-          const s = q?.quotaSnapshots?.[0];
-          if (s)
-            final +=
-              '\n\n`' + s.usedRequests + '/' + s.entitlementRequests + ' reqs (' + s.remainingPercentage + '% left)`';
-        } catch {
-          /* ignore */
+      if (c.showUsage && lastUsage) {
+        const parts: string[] = [];
+        if (lastUsage.model) parts.push(lastUsage.model);
+        if (lastUsage.inputTokens || lastUsage.outputTokens) {
+          const inp = lastUsage.inputTokens ?? 0;
+          const out = lastUsage.outputTokens ?? 0;
+          parts.push(`${inp}→${out} tokens`);
         }
+        if (lastUsage.cacheReadTokens) parts.push(`${lastUsage.cacheReadTokens} cached`);
+        if (lastUsage.duration) parts.push(`${(lastUsage.duration / 1000).toFixed(1)}s`);
+        if (contextInfo) parts.push(contextInfo.replace(/[📊 `]/g, ''));
+        if (turnCount > 0) parts.push(`turn ${turnCount + 1}`);
+        if (parts.length) final += '\n\n`' + parts.join(' · ') + '`';
       }
 
       // Finalize: send the complete response
