@@ -939,14 +939,27 @@ async function main(): Promise<void> {
         try {
           const q = await s.getQuota();
           const snap = q?.quotaSnapshots;
+          log.debug('Quota snapshots:', JSON.stringify(snap));
           if (snap) {
             const chat = (snap as any).chat;
             const completions = (snap as any).completions;
             if (chat || completions) {
               lines.push('');
               lines.push('**Quota**');
-              if (chat) lines.push('💬 Chat: `' + chat.used + '/' + chat.limit + '` (' + chat.remaining_percentage + '% left)');
-              if (completions) lines.push('⚡ Completions: `' + completions.used + '/' + completions.limit + '` (' + completions.remaining_percentage + '% left)');
+              if (chat) {
+                if (chat.isUnlimitedEntitlement) {
+                  lines.push('💬 Chat: ♾️ Unlimited');
+                } else {
+                  lines.push('💬 Chat: `' + (chat.usedRequests ?? chat.used ?? '?') + '/' + (chat.entitlementRequests ?? chat.limit ?? '?') + '` (' + (chat.remainingPercentage ?? chat.remaining_percentage ?? '?') + '% left)');
+                }
+              }
+              if (completions) {
+                if (completions.isUnlimitedEntitlement) {
+                  lines.push('⚡ Completions: ♾️ Unlimited');
+                } else {
+                  lines.push('⚡ Completions: `' + (completions.usedRequests ?? completions.used ?? '?') + '/' + (completions.entitlementRequests ?? completions.limit ?? '?') + '` (' + (completions.remainingPercentage ?? completions.remaining_percentage ?? '?') + '% left)');
+                }
+              }
             }
           }
         } catch {
