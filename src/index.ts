@@ -216,7 +216,7 @@ async function main(): Promise<void> {
   let cachedModels: ModelInfo[] = [];
   // Per-session usage tracking (keyed by session key)
   const lastUsageMap = new Map<string, any>();
-  const contextInfoMap = new Map<string, string>();
+  const contextInfoMap = new Map<string, { tokenLimit: number; currentTokens: number; messagesLength: number }>();
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
@@ -549,7 +549,7 @@ async function main(): Promise<void> {
     session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
       const pct = Math.round((info.currentTokens / info.tokenLimit) * 100);
       contextInfo = `📊 ${pct}% context · ${info.messagesLength} msgs`;
-      contextInfoMap.set(chatId, contextInfo);
+      contextInfoMap.set(chatId, info);
     });
     session.on('usage', (u: Record<string, unknown>) => {
       lastUsage = {
@@ -620,21 +620,6 @@ async function main(): Promise<void> {
       clearInterval(typingInterval);
 
       let final = res.content;
-      if (c.showUsage && lastUsage) {
-        const u = lastUsage;
-        const parts: string[] = [];
-        if (u.model) parts.push(u.model);
-        if (u.inputTokens || u.outputTokens) {
-          const inp = u.inputTokens ?? 0;
-          const out = u.outputTokens ?? 0;
-          parts.push(`${inp}→${out} tokens`);
-        }
-        if (u.cacheReadTokens) parts.push(`${u.cacheReadTokens} cached`);
-        if (u.duration) parts.push(`${(u.duration / 1000).toFixed(1)}s`);
-        if (contextInfo) parts.push(contextInfo.replace(/📊 /g, ''));
-        if (turnCount > 0) parts.push(`turn ${turnCount + 1}`);
-        if (parts.length) final += '\n\n`' + parts.join(' · ') + '`';
-      }
 
       // Finalize: send the complete response
       // Always clean up streaming message if we're sending a new one
@@ -821,19 +806,44 @@ async function main(): Promise<void> {
           /* ignore */
         }
 
+        // Context usage (like Copilot CLI)
+        const ci = contextInfoMap.get(chatId);
+        if (ci) {
+          const pct = ci.tokenLimit ? Math.round((ci.currentTokens / ci.tokenLimit) * 100) : 0;
+          const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+          lines.push('');
+          lines.push('**Context Usage**');
+          lines.push('`' + fmt(ci.currentTokens) + '/' + fmt(ci.tokenLimit) + ' tokens (' + pct + '%)` · ' + ci.messagesLength + ' messages');
+        }
+
+        // Last turn usage
+        const lu = lastUsageMap.get(chatId);
+        if (lu) {
+          const parts: string[] = [];
+          if (lu.inputTokens || lu.outputTokens) parts.push(`${lu.inputTokens ?? 0}→${lu.outputTokens ?? 0} tokens`);
+          if (lu.cacheReadTokens) parts.push(`${lu.cacheReadTokens} cached`);
+          if (lu.duration) parts.push(`${(lu.duration / 1000).toFixed(1)}s`);
+          if (parts.length) {
+            lines.push('');
+            lines.push('**Last Turn**');
+            lines.push('`' + parts.join(' · ') + '`');
+          }
+        }
+
+        // Quota
         try {
           const q = await s.getQuota();
-          const snap = q?.quotaSnapshots?.[0];
-          if (snap)
-            lines.push(
-              '📊 ' +
-                snap.usedRequests +
-                '/' +
-                snap.entitlementRequests +
-                ' reqs (' +
-                snap.remainingPercentage +
-                '% left)',
-            );
+          const snap = q?.quotaSnapshots;
+          if (snap) {
+            const chat = (snap as any).chat;
+            const completions = (snap as any).completions;
+            if (chat || completions) {
+              lines.push('');
+              lines.push('**Quota**');
+              if (chat) lines.push('💬 Chat: `' + chat.used + '/' + chat.limit + '` (' + chat.remaining_percentage + '% left)');
+              if (completions) lines.push('⚡ Completions: `' + completions.used + '/' + completions.limit + '` (' + completions.remaining_percentage + '% left)');
+            }
+          }
         } catch {
           /* ignore */
         }
@@ -1026,7 +1036,10 @@ async function main(): Promise<void> {
           }
           // Add context info if available
           const ci = contextInfoMap.get(chatId);
-          if (ci) lines.push(ci);
+          if (ci) {
+            const pct = ci.tokenLimit ? Math.round((ci.currentTokens / ci.tokenLimit) * 100) : 0;
+            lines.push(`📊 ${pct}% context · ${ci.messagesLength} msgs`);
+          }
 
           if (lines.length) {
             await client.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
@@ -1588,7 +1601,10 @@ async function main(): Promise<void> {
         } catch { /* ignore */ }
       }
       const ci = contextInfoMap.get(chatId);
-      if (ci) lines.push(ci);
+      if (ci) {
+        const pct = ci.tokenLimit ? Math.round((ci.currentTokens / ci.tokenLimit) * 100) : 0;
+        lines.push(`📊 ${pct}% context · ${ci.messagesLength} msgs`);
+      }
       const lu = lastUsageMap.get(chatId);
       if (lu) {
         const parts: string[] = [];
