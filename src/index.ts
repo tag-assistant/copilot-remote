@@ -9,6 +9,7 @@ import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
 import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
+import { discoverAgents } from './agent-discovery.js';
 import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -292,7 +293,15 @@ async function main(): Promise<void> {
       // Global config passthrough
       provider: globalCfg.provider,
       mcpServers: globalCfg.mcpServers,
-      customAgents: globalCfg.customAgents,
+      // Merge discovered agents from standard locations with config agents
+      customAgents: (() => {
+        const discovered = discoverAgents(workDir(chatId));
+        const configAgents = (globalCfg.customAgents ?? []) as Array<{ name: string }>;
+        const configNames = new Set(configAgents.map(a => a.name));
+        const merged = [...configAgents, ...discovered.filter(a => !configNames.has(a.name))];
+        if (discovered.length) log.info(`Discovered ${discovered.length} agent(s): ${discovered.map(a => a.name).join(', ')}`);
+        return merged.length ? merged : undefined;
+      })(),
       skillDirectories: globalCfg.skillDirectories,
       disabledSkills: globalCfg.disabledSkills,
       systemInstructions: globalCfg.systemInstructions,
