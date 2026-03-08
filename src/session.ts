@@ -18,14 +18,12 @@ import {
 } from '@github/copilot-sdk';
 import { EventEmitter } from 'events';
 
-export type PermissionMode = 'smart' | 'ask-all' | 'allow-all' | 'autopilot';
-
 export interface SessionOptions {
   cwd: string;
   binary?: string;
   env?: Record<string, string>;
   model?: string;
-  permissionMode?: PermissionMode;
+  autopilot?: boolean;
   agent?: string;
 }
 
@@ -57,7 +55,7 @@ export class Session extends EventEmitter {
   private _alive = false;
   private _busy = false;
   private _model: string | null = null;
-  private _permissionMode: PermissionMode = 'smart';
+  private _autopilot = false;
   private _agent: string | null = null;
   private cwd: string = '';
 
@@ -68,8 +66,8 @@ export class Session extends EventEmitter {
   get alive(): boolean { return this._alive; }
   get busy(): boolean { return this._busy; }
   get currentSessionId(): string | null { return this.session?.sessionId ?? null; }
-  get permissionMode(): PermissionMode { return this._permissionMode; }
-  set permissionMode(v: PermissionMode) { this._permissionMode = v; }
+  get autopilot(): boolean { return this._autopilot; }
+  set autopilot(v: boolean) { this._autopilot = v; }
   get model(): string | null { return this._model; }
   set model(v: string | null) { this._model = v; }
   get agent(): string | null { return this._agent; }
@@ -78,7 +76,7 @@ export class Session extends EventEmitter {
   async start(options: SessionOptions): Promise<void> {
     this.cwd = options.cwd;
     this._model = options.model ?? null;
-    this._permissionMode = options.permissionMode ?? 'smart';
+    this._autopilot = options.autopilot ?? false;
     this._agent = options.agent ?? null;
 
     const clientOptions: Record<string, any> = {
@@ -100,7 +98,7 @@ export class Session extends EventEmitter {
     const config: SessionConfig = {
       clientName: 'copilot-remote',
       workingDirectory: this.cwd,
-      onPermissionRequest: (this._permissionMode === 'allow-all' || this._permissionMode === 'autopilot')
+      onPermissionRequest: this._autopilot
         ? approveAll
         : (req: PermissionRequest) => this.handlePermission(req),
     };
@@ -192,48 +190,9 @@ export class Session extends EventEmitter {
     }
   }
 
-  // Read-only operations auto-approved
-  private static readonly AUTO_APPROVE_KINDS = new Set(['read', 'url']);
-
-  // Read-only shell commands auto-approved
-  private static readonly READONLY_COMMANDS = [
-    'cat ', 'ls ', 'ls\n', 'pwd', 'echo ', 'head ', 'tail ', 'wc ',
-    'find ', 'grep ', 'rg ', 'fd ', 'which ', 'whoami', 'hostname',
-    'date', 'git status', 'git log', 'git diff', 'git branch',
-    'git show', 'git rev-parse', 'git remote', 'git --no-pager',
-    'gh api', 'gh repo view', 'gh repo list', 'gh pr list', 'gh issue list',
-    'gh pr view', 'gh issue view', 'gh search',
-    'node -e', 'node -p', 'curl -s', 'curl --silent',
-  ];
-
-  private shouldAutoApprove(req: PermissionRequest): boolean {
-    // Always approve reads and URL fetches
-    if (Session.AUTO_APPROVE_KINDS.has(req.kind)) return true;
-
-    // Check shell commands for read-only patterns
-    if (req.kind === 'shell') {
-      const cmd = ((req as any).fullCommandText ?? '').trim();
-      // cd is always safe
-      if (cmd.startsWith('cd ')) return true;
-      // Check readonly command prefixes
-      for (const prefix of Session.READONLY_COMMANDS) {
-        if (cmd.startsWith(prefix)) return true;
-      }
-    }
-
-    return false;
-  }
-
   private async handlePermission(req: PermissionRequest): Promise<PermissionRequestResult> {
-    // If mode changed to allow-all or autopilot mid-session, auto-approve
-    if (this._permissionMode === 'allow-all' || this._permissionMode === 'autopilot') {
-      console.log('[SDK] Auto-approved (' + this._permissionMode + '): ' + req.kind);
-      return { kind: 'approved' };
-    }
-
-    // smart mode: auto-approve safe ops, prompt for writes
-    if (this._permissionMode === 'smart' && this.shouldAutoApprove(req)) {
-      console.log('[SDK] Auto-approved: ' + req.kind + ' ' + ((req as any).fullCommandText ?? (req as any).url ?? '').slice(0, 80));
+    // If autopilot was enabled mid-session, auto-approve
+    if (this._autopilot) {
       return { kind: 'approved' };
     }
 
