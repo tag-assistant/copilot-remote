@@ -140,8 +140,57 @@ export function wrapFileReferencesInHtml(html: string): string {
 
 // --- Public API ---
 
+/**
+ * Convert markdown pipe tables to bullet lists (Telegram doesn't support tables).
+ * | Header1 | Header2 |    →    **Row1Col1**
+ * |---------|---------|         Header2: Row1Col2
+ * | Val1    | Val2    |
+ */
+function tablesToBullets(md: string): string {
+  const lines = md.split('\n');
+  const result: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    // Detect table: line starts and ends with |, next line is separator
+    if (line.startsWith('|') && line.endsWith('|') && i + 1 < lines.length) {
+      const nextLine = lines[i + 1]?.trim() ?? '';
+      if (/^\|[\s:-]+\|/.test(nextLine)) {
+        // Parse header
+        const headers = line.split('|').filter(c => c.trim()).map(c => c.trim());
+        i += 2; // skip header + separator
+        // Parse rows
+        while (i < lines.length && lines[i].trim().startsWith('|')) {
+          const cells = lines[i].trim().split('|').filter(c => c.trim()).map(c => c.trim());
+          if (cells.length > 0) {
+            // First column as bold label, rest as key:value
+            const label = cells[0];
+            if (cells.length === 1) {
+              result.push(`• **${label}**`);
+            } else if (cells.length === 2) {
+              result.push(`• **${label}** — ${cells[1]}`);
+            } else {
+              result.push(`• **${label}**`);
+              for (let j = 1; j < cells.length; j++) {
+                if (cells[j]) result.push(`  ${headers[j] ?? ''}: ${cells[j]}`);
+              }
+            }
+          }
+          i++;
+        }
+        result.push(''); // blank line after table
+        continue;
+      }
+    }
+    result.push(lines[i]);
+    i++;
+  }
+  return result.join('\n');
+}
+
 export function markdownToTelegramHtml(markdown: string, options: { wrapFileRefs?: boolean } = {}): string {
-  const ir = markdownToIR(markdown ?? '', {
+  const processed = tablesToBullets(markdown ?? '');
+  const ir = markdownToIR(processed, {
     linkify: true,
     enableSpoilers: true,
     headingStyle: 'none',
