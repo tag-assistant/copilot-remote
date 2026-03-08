@@ -710,6 +710,11 @@ async function main(): Promise<void> {
       let final = res.content;
 
       // Finalize: send the complete response
+      // If thinking message is still showing (transition never happened), delete it
+      if (thinkingText && streamMsgId) {
+        client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
+        streamMsgId = null;
+      }
       // Clean up any stale messages from old generations
       for (const id of staleMessageIds) {
         client.deleteMessage?.(chatId, id).catch(() => {});
