@@ -28,11 +28,9 @@ export class TelegramClient implements Client {
       { command: 'stop', description: 'Kill session' },
       { command: 'status', description: 'Model, mode, quota' },
       { command: 'config', description: 'Settings menu' },
-      { command: 'autopilot', description: 'Toggle auto-approve' },
       { command: 'plan', description: 'Plan mode' },
       { command: 'agent', description: 'Switch agent' },
       { command: 'compact', description: 'Compress context' },
-      { command: 'debug', description: 'Toggle debug logs' },
       { command: 'help', description: 'All commands' },
     ]);
 

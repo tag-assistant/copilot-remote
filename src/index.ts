@@ -399,23 +399,10 @@ async function main(): Promise<void> {
         }
         break;
       }
-      case '/debug': {
-        log.enabled = !log.enabled;
-        await client.sendMessage(chatId, log.enabled ? '🐛 Debug ON' : '🐛 Debug OFF');
-        break;
-      }
+      case '/debug':
       case '/autopilot':
       case '/allowall': {
-        const s = sessions.get(chatId);
-        if (!s?.alive) {
-          await client.sendMessage(chatId, 'No session.');
-          break;
-        }
-        const c = cfg(chatId);
-        c.autopilot = !c.autopilot;
-        s.autopilot = c.autopilot;
-        setCfg(chatId, c);
-        await client.sendMessage(chatId, c.autopilot ? '🚀 Autopilot ON' : '🔐 Autopilot OFF');
+        await client.sendMessage(chatId, 'Use /config to change settings.');
         break;
       }
       case '/agent': {
