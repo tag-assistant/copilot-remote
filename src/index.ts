@@ -415,7 +415,7 @@ async function main(): Promise<void> {
     let activeToolStatus = ''; // current tool being executed (always shown)
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
-    const THROTTLE = useDraft ? 400 : 800; // drafts can update faster, edits throttled to avoid rate limits
+    const THROTTLE = useDraft ? 400 : 500; // drafts can update faster, edits throttled to avoid rate limits
 
     const display = () => {
       const p: string[] = [];
@@ -470,10 +470,10 @@ async function main(): Promise<void> {
         log.debug('Stream: new message', streamMsgId);
       } else {
         log.debug('Stream: edit message', streamMsgId);
-        await client.editMessage(chatId, streamMsgId, text);
-        // Re-send typing after every edit — Telegram cancels typing indicator on editMessageText
-        // (OpenClaw pattern: typing resilience after edits)
-        client.sendTyping(chatId);
+        // Fire-and-forget edit — don't block the flush loop waiting for Telegram's response
+        client.editMessage(chatId, streamMsgId, text).then(() => {
+          client.sendTyping(chatId); // re-send typing after edit
+        }).catch(() => {});
       }
     };
 
