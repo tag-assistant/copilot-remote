@@ -127,8 +127,6 @@ export class Session extends EventEmitter {
   }
 
   private async handlePermission(req: PermissionRequest): Promise<PermissionRequestResult> {
-    if (this._autopilot) return { kind: 'approved' };
-
     this.emit('permission_request', req);
     log.debug('Permission prompt (waiting for user):', req.kind);
     return new Promise<PermissionRequestResult>((resolve) => {

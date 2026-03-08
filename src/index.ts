@@ -860,17 +860,21 @@ async function main(): Promise<void> {
     }
     if (data.startsWith('mode:')) {
       const newMode = data.slice(5) as 'interactive' | 'plan' | 'autopilot';
-      const s = sessions.get(chatId);
       const c = cfg(chatId);
-      if (s?.alive) {
-        try {
-          await s.setMode(newMode);
-          c.autopilot = newMode === 'autopilot';
-          s.autopilot = c.autopilot;
-          setCfg(chatId, c);
-        } catch {
-          /* ignore */
-        }
+      c.autopilot = newMode === 'autopilot';
+      setCfg(chatId, c);
+      // Restart session with correct permission handler
+      const old = sessions.get(chatId);
+      if (old?.alive) old.kill();
+      sessions.delete(chatId);
+      await getSession(chatId);
+      // Set mode after restart (autopilot is handled by session config, plan needs explicit set)
+      if (newMode === 'plan') {
+        const s = sessions.get(chatId);
+        if (s?.alive)
+          await s.setMode('plan').catch(() => {
+            /* ignore */
+          });
       }
       return sendConfigMenu(chatId, msgId);
     }
