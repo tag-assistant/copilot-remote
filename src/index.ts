@@ -457,7 +457,7 @@ async function main(): Promise<void> {
       if (thinkingText && c.showThinking) {
         const s = thinkingText;
         // Light escaping: only escape what breaks Telegram markdown italic
-        p.push('💭 <i>' + s.replace(/[<>&]/g, c => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;') + '</i>');
+        p.push('💭 ' + s);
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
       if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
