@@ -303,6 +303,16 @@ async function main(): Promise<void> {
       };
       lastUsageMap.set(chatId, lastUsage);
     });
+    let lastTokenCount = 0;
+    session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
+      contextInfoMap.set(chatId, info);
+      // Detect compaction: if token count drops significantly, the SDK compacted
+      if (lastTokenCount > 0 && info.currentTokens < lastTokenCount * 0.7) {
+        const pct = Math.round((info.currentTokens / info.tokenLimit) * 100);
+        client.sendMessage(chatId, '🧹 Context compacted: ' + Math.round(lastTokenCount / 1000) + 'k → ' + Math.round(info.currentTokens / 1000) + 'k tokens (' + pct + '% of ' + Math.round(info.tokenLimit / 1000) + 'k limit)').catch(() => {});
+      }
+      lastTokenCount = info.currentTokens;
+    });
     session.on('turn_start', () => {});
     session.on('permission_timeout', () => {
       for (const [id, cid] of pendingPerms) {
