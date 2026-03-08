@@ -38,6 +38,9 @@ export class TelegramClient implements Client {
   onFile?: Client['onFile'];
   onInlineQuery?: Client['onInlineQuery'];
 
+  /** Expose bot API for draft stream integration. */
+  get api() { return this.bot.api; }
+
   constructor(private config: TelegramConfig) {
     this.bot = new Bot<MyContext>(config.botToken);
 

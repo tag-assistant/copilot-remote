@@ -11,6 +11,8 @@ import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
 import { discoverAgents } from './agent-discovery.js';
 import { log } from './log.js';
+import { ReasoningLaneCoordinator } from './reasoning-lane.js';
+import { markdownToTelegramHtml } from './format.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
@@ -418,7 +420,8 @@ async function main(): Promise<void> {
     const display = () => {
       const p: string[] = [];
       if (intentText) p.push('🎯 *' + intentText + '*');
-      if (thinkingText) {
+      // Only show thinking inline if NOT using separate thinking message
+      if (thinkingText && !thinkingMsgId) {
         const s = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
         p.push('💭 _' + s.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&') + '_');
       }
@@ -430,6 +433,7 @@ async function main(): Promise<void> {
 
     let streamGeneration = 0;
     const staleMessageIds: number[] = []; // messages from old generations, cleaned up at finalize
+    let thinkingMsgId: number | null = null; // separate message for thinking (when showThinking is on)
 
     // Minimum chars before sending first streaming message.
     // Prevents premature push notifications (user sees "I" before the full sentence).
@@ -477,22 +481,36 @@ async function main(): Promise<void> {
       if (!timer) timer = setTimeout(() => { flush().catch(() => {}); }, Math.max(0, THROTTLE - (Date.now() - lastEdit)));
     };
 
-    const onThink = (t: string) => {
-      if (c.showThinking) {
-        thinkingText += t;
-        schedEdit();
+    const onThink = async (t: string) => {
+      if (!c.showThinking) return;
+      thinkingText += t;
+      // Send thinking to a separate message (not the main stream)
+      const preview = thinkingText.length > 300 ? '...' + thinkingText.slice(-300) : thinkingText;
+      const escaped = preview.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+      const text = '💭 _' + escaped + '_';
+      if (!thinkingMsgId) {
+        if (text.length < 20) return; // debounce tiny thinking
+        const id = await client.sendMessage(chatId, text, { disableLinkPreview: true });
+        thinkingMsgId = id;
+      } else {
+        client.editMessage(chatId, thinkingMsgId, text).catch(() => {});
       }
     };
     const onDelta = (t: string) => {
-      if (thinkingText && streamMsgId) {
-        // Clean thinking→response lane transition: retire thinking message, let next flush
-        // create a fresh message for the response content.
-        // (OpenClaw pattern: lane transition via generation bump + stale tracking)
-        staleMessageIds.push(streamMsgId);
-        streamMsgId = null;
-        streamGeneration++;
+      // Thinking→response transition: delete thinking message
+      if (thinkingText) {
+        if (thinkingMsgId) {
+          client.deleteMessage?.(chatId, thinkingMsgId).catch(() => {});
+          thinkingMsgId = null;
+        }
+        if (streamMsgId) {
+          staleMessageIds.push(streamMsgId);
+          streamMsgId = null;
+          streamGeneration++;
+        }
+        thinkingText = '';
       }
-      thinkingText = '';
+      if (!responseText) react(LIFECYCLE_REACTIONS.writing);
       responseText += t;
       schedEdit();
     };
@@ -680,6 +698,11 @@ async function main(): Promise<void> {
 
       // Finalize: send the complete response
       // Clean up any stale messages from old generations
+      // Clean up thinking message if still present
+      if (thinkingMsgId) {
+        client.deleteMessage?.(chatId, thinkingMsgId).catch(() => {});
+        thinkingMsgId = null;
+      }
       for (const id of staleMessageIds) {
         client.deleteMessage?.(chatId, id).catch(() => {});
       }
