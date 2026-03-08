@@ -1,16 +1,12 @@
-// Copilot Remote — Telegram Bridge
-// Raw Telegram Bot API via fetch(). No grammy/telegraf.
+// Copilot Remote — Telegram Bridge (grammY)
+import { Bot, type Context } from 'grammy';
+import { run, type RunnerHandle } from '@grammyjs/runner';
 import { markdownToHtml, markdownToText } from './format.js';
 import { toTelegramReaction } from './emoji.js';
 import { log } from './log.js';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
 
-const TELEGRAM_API = 'https://api.telegram.org/bot';
-const POLL_INTERVAL = 1000;
 const MAX_MESSAGE_LENGTH = 4096;
 const DRAFT_ID_MAX = 2_147_483_647;
-const OFFSET_FILE = join(process.env.HOME ?? '/tmp', '.copilot-remote', 'poll-offset');
 let nextDraftId = 0;
 
 export interface TelegramConfig {
@@ -19,9 +15,8 @@ export interface TelegramConfig {
 }
 
 export class TelegramBridge {
-  private baseUrl: string;
-  private offset = 0;
-  private polling = false;
+  private bot: Bot;
+  private runner: RunnerHandle | null = null;
   private onMessage:
     | ((
         text: string,
@@ -46,19 +41,111 @@ export class TelegramBridge {
     | null = null;
   private onInlineQuery: ((queryId: string, query: string) => void) | null = null;
   private pairedUser: string | null = null;
-  public topicNames = new Map<string, string>(); // "chatId:threadId" → topic name
+  public topicNames = new Map<string, string>();
 
   constructor(private config: TelegramConfig) {
-    this.baseUrl = TELEGRAM_API + config.botToken;
+    this.bot = new Bot(config.botToken);
     if (config.allowedUsers.length > 0) {
       this.pairedUser = config.allowedUsers[0];
     }
-    // Restore poll offset from disk
-    try {
-      this.offset = parseInt(readFileSync(OFFSET_FILE, 'utf-8').trim(), 10) || 0;
-    } catch {
-      /* ignore */
+    this.setupHandlers();
+  }
+
+  private isAllowed(userId: number | undefined, chatType: string): boolean {
+    const id = String(userId);
+    if (!this.pairedUser) {
+      this.pairedUser = id;
+      console.log('[Telegram] Auto-paired with user ' + id);
+      return true;
     }
+    return id === this.pairedUser;
+  }
+
+  private setupHandlers(): void {
+    // Text messages
+    this.bot.on('message:text', async (ctx) => {
+      const userId = ctx.from?.id;
+      if (!this.isAllowed(userId, ctx.chat.type)) {
+        if (ctx.chat.type === 'private') {
+          await ctx.reply('⛔ This instance is paired with another user.');
+        }
+        return;
+      }
+
+      // Track topic name
+      const threadId = ctx.message.message_thread_id;
+      if (threadId) {
+        const topicKey = ctx.chat.id + ':' + threadId;
+        const topicCreated = ctx.message.reply_to_message?.forum_topic_created;
+        if (topicCreated?.name && !this.topicNames.has(topicKey)) {
+          this.topicNames.set(topicKey, topicCreated.name);
+        }
+      }
+
+      this.onMessage?.(
+        ctx.message.text,
+        String(ctx.chat.id),
+        ctx.message.message_id,
+        ctx.message.reply_to_message?.text,
+        ctx.message.reply_to_message?.message_id,
+        threadId,
+      );
+    });
+
+    // Photos, documents, voice, audio
+    this.bot.on(['message:photo', 'message:document', 'message:voice', 'message:audio'], async (ctx) => {
+      const userId = ctx.from?.id;
+      if (!this.isAllowed(userId, ctx.chat.type)) return;
+
+      const msg = ctx.message;
+      const fileId =
+        msg.voice?.file_id ?? msg.audio?.file_id ?? msg.document?.file_id ?? msg.photo?.[msg.photo.length - 1]?.file_id;
+      const fileName = msg.document?.file_name ?? msg.audio?.file_name ?? (msg.voice ? 'voice.oga' : 'photo.jpg');
+      const caption = msg.caption ?? '';
+      if (fileId) {
+        this.onFile?.(fileId, fileName, caption, String(ctx.chat.id), msg.message_id, msg.message_thread_id);
+      }
+    });
+
+    // Callback queries
+    this.bot.on('callback_query:data', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = String(ctx.callbackQuery.message?.chat?.id ?? '');
+      if (!this.isAllowed(userId, 'callback') || !chatId) {
+        await ctx.answerCallbackQuery().catch(() => {});
+        return;
+      }
+
+      try {
+        await this.onCallback?.(
+          ctx.callbackQuery.id,
+          ctx.callbackQuery.data,
+          chatId,
+          ctx.callbackQuery.message?.message_id ?? 0,
+        );
+      } catch {
+        /* ignore handler errors */
+      }
+      // Always answer to dismiss loading
+      await ctx.answerCallbackQuery().catch(() => {});
+    });
+
+    // Inline queries
+    this.bot.on('inline_query', async (ctx) => {
+      const userId = ctx.from?.id;
+      if (!this.isAllowed(userId, 'inline') || !ctx.inlineQuery.query?.trim()) return;
+      this.onInlineQuery?.(ctx.inlineQuery.id, ctx.inlineQuery.query.trim());
+    });
+
+    // Reactions
+    this.bot.on('message_reaction', async (ctx) => {
+      const r = ctx.messageReaction;
+      const chatId = String(r.chat?.id ?? '');
+      const userId = String(r.user?.id ?? (r as any).actor_chat?.id ?? '');
+      if (userId !== this.pairedUser || !chatId) return;
+      const emojis = (r.new_reaction ?? []).filter((e) => e.type === 'emoji').map((e) => e.emoji);
+      for (const emoji of emojis) this.onReaction?.(emoji, chatId, r.message_id);
+    });
   }
 
   setMessageHandler(handler: typeof this.onMessage): void {
@@ -78,116 +165,29 @@ export class TelegramBridge {
   }
 
   async startPolling(): Promise<void> {
-    this.polling = true;
     if (this.pairedUser) {
       console.log('[Telegram] Polling started — paired with user ' + this.pairedUser);
     } else {
       console.log('[Telegram] Polling started — waiting for first user to pair');
     }
 
-    while (this.polling) {
-      try {
-        const updates = await this.getUpdates();
-        for (const update of updates) {
-          this.offset = update.update_id + 1;
-          this.saveOffset();
+    // Use @grammyjs/runner for concurrent update handling
+    this.runner = run(this.bot, {
+      runner: {
+        fetch: {
+          allowed_updates: ['message', 'callback_query', 'message_reaction', 'inline_query'],
+        },
+      },
+    });
 
-          if (update.message?.text) {
-            const msg = update.message;
-            const userId = String(msg.from?.id);
-
-            if (!this.pairedUser) {
-              this.pairedUser = userId;
-              console.log('[Telegram] Auto-paired with user ' + userId + ' (' + (msg.from?.first_name ?? '') + ')');
-            }
-            if (userId !== this.pairedUser) {
-              if (msg.chat.type === 'private') {
-                await this.sendMessage(msg.chat.id, '⛔ This instance is paired with another user.');
-              }
-              continue;
-            }
-            this.onMessage?.(
-              msg.text,
-              String(msg.chat.id),
-              msg.message_id,
-              msg.reply_to_message?.text,
-              msg.reply_to_message?.message_id,
-              msg.message_thread_id,
-            );
-            // Track topic name from forum_topic_created service message
-            if (msg.message_thread_id) {
-              const topicKey = msg.chat.id + ':' + msg.message_thread_id;
-              const topicCreated = msg.reply_to_message?.forum_topic_created;
-              if (topicCreated?.name && !this.topicNames.has(topicKey)) {
-                this.topicNames.set(topicKey, topicCreated.name);
-              }
-            }
-          } else if (
-            update.message &&
-            (update.message.photo || update.message.document || update.message.voice || update.message.audio)
-          ) {
-            const msg = update.message;
-            const userId = String(msg.from?.id);
-            if (userId !== this.pairedUser) continue;
-
-            // Get file_id: largest photo, document, voice, or audio
-            const fileId =
-              msg.voice?.file_id ??
-              msg.audio?.file_id ??
-              msg.document?.file_id ??
-              msg.photo?.[msg.photo.length - 1]?.file_id;
-            const fileName = msg.document?.file_name ?? msg.audio?.file_name ?? (msg.voice ? 'voice.oga' : 'photo.jpg');
-            const caption = msg.caption ?? '';
-            if (fileId) {
-              this.onFile?.(fileId, fileName, caption, String(msg.chat.id), msg.message_id, msg.message_thread_id);
-            }
-          }
-
-          if (update.callback_query) {
-            const cb = update.callback_query;
-            const chatId = String(cb.message?.chat?.id ?? '');
-            const userId = String(cb.from?.id);
-            if (userId === this.pairedUser && chatId) {
-              // Let handler answer with custom text/alert; fall back to empty answer
-              try {
-                await this.onCallback?.(cb.id, cb.data ?? '', chatId, cb.message?.message_id ?? 0);
-              } catch {
-                /* ignore handler errors */
-              }
-            }
-            // Always answer to dismiss the loading indicator
-            await this.api('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {
-              /* ignore */
-            });
-          }
-
-          if (update.inline_query) {
-            const iq = update.inline_query;
-            const userId = String(iq.from?.id);
-            if (userId === this.pairedUser && iq.query?.trim()) {
-              this.onInlineQuery?.(iq.id, iq.query.trim());
-            }
-          }
-
-          if (update.message_reaction) {
-            const r = update.message_reaction;
-            const chatId = String(r.chat?.id ?? '');
-            const userId = String(r.user?.id ?? r.actor_chat?.id ?? '');
-            const emojis = (r.new_reaction ?? []).filter((e: any) => e.type === 'emoji').map((e: any) => e.emoji);
-            if (userId === this.pairedUser && chatId) {
-              for (const emoji of emojis) this.onReaction?.(emoji, chatId, r.message_id);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[Telegram] Poll error:', err);
-      }
-      await sleep(POLL_INTERVAL);
-    }
+    // Block until runner stops
+    await this.runner.task();
   }
 
   stopPolling(): void {
-    this.polling = false;
+    if (this.runner?.isRunning()) {
+      this.runner.stop();
+    }
   }
 
   // ── Messaging (HTML with plain text fallback) ──
@@ -206,7 +206,7 @@ export class TelegramBridge {
 
     for (const chunk of chunks) {
       const res = await this.sendText('sendMessage', { chat_id: chatId, ...extra }, chunk);
-      lastMsgId = res?.result?.message_id ?? null;
+      lastMsgId = res?.message_id ?? null;
     }
     return lastMsgId;
   }
@@ -236,7 +236,7 @@ export class TelegramBridge {
       { chat_id: chatId, reply_markup: markup, ...(threadId ? { message_thread_id: threadId } : {}) },
       text,
     );
-    return res?.result?.message_id ?? null;
+    return res?.message_id ?? null;
   }
 
   async editMessageButtons(
@@ -259,9 +259,9 @@ export class TelegramBridge {
     await this.sendText('editMessageText', { chat_id: chatId, message_id: messageId, reply_markup: markup }, text);
   }
 
-  // ── Draft streaming (native Telegram streaming) ──
+  // ── Draft streaming ──
 
-  private draftSupported: boolean | null = null; // null = unknown, try first
+  private draftSupported: boolean | null = null;
 
   async sendDraft(chatId: string | number, draftId: number, text: string, threadId?: number): Promise<boolean> {
     if (this.draftSupported === false) return false;
@@ -273,7 +273,7 @@ export class TelegramBridge {
         parse_mode: 'HTML',
       };
       if (threadId) params.message_thread_id = threadId;
-      await this.api('sendMessageDraft', params);
+      await (this.bot.api.raw as any).sendMessageDraft(params);
       this.draftSupported = true;
       return true;
     } catch (e) {
@@ -293,69 +293,54 @@ export class TelegramBridge {
   // ── Presence ──
 
   async sendTyping(chatId: string | number, threadId?: number): Promise<void> {
-    await this.api('sendChatAction', {
-      chat_id: chatId,
-      action: 'typing',
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.sendChatAction(chatId, 'typing', { message_thread_id: threadId }).catch(() => {});
   }
 
   async setReaction(chatId: string | number, messageId: number, emoji: string): Promise<void> {
     const safe = toTelegramReaction(emoji);
-    await this.api('setMessageReaction', {
-      chat_id: chatId,
-      message_id: messageId,
-      reaction: [{ type: 'emoji', emoji: safe }],
-    }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji: safe as any }]).catch(() => {});
   }
 
   async removeReaction(chatId: string | number, messageId: number): Promise<void> {
-    await this.api('setMessageReaction', { chat_id: chatId, message_id: messageId, reaction: [] }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.setMessageReaction(chatId, messageId, []).catch(() => {});
   }
 
   // ── File operations ──
 
   async getFileUrl(fileId: string): Promise<string | null> {
     try {
-      const res = await this.api('getFile', { file_id: fileId });
-      const filePath = res.result?.file_path;
-      if (!filePath) return null;
-      return 'https://api.telegram.org/file/bot' + this.config.botToken + '/' + filePath;
+      const file = await this.bot.api.getFile(fileId);
+      if (!file.file_path) return null;
+      return 'https://api.telegram.org/file/bot' + this.config.botToken + '/' + file.file_path;
     } catch {
       return null;
     }
   }
 
   async sendDocument(chatId: string | number, url: string, filename: string, caption?: string): Promise<number | null> {
-    const res = await this.api('sendDocument', {
-      chat_id: chatId,
-      document: url,
-      caption: caption ?? filename,
-    }).catch(() => null);
-    return res?.result?.message_id ?? null;
+    try {
+      const res = await this.bot.api.sendDocument(chatId, url, { caption: caption ?? filename });
+      return res.message_id;
+    } catch {
+      return null;
+    }
   }
 
   async sendPhoto(chatId: string | number, url: string, caption?: string): Promise<number | null> {
-    const res = await this.api('sendPhoto', {
-      chat_id: chatId,
-      photo: url,
-      ...(caption ? { caption } : {}),
-    }).catch(() => null);
-    return res?.result?.message_id ?? null;
+    try {
+      const res = await this.bot.api.sendPhoto(chatId, url, { ...(caption ? { caption } : {}) });
+      return res.message_id;
+    } catch {
+      return null;
+    }
   }
 
   // ── Forum topics ──
 
   async createForumTopic(chatId: string | number, name: string): Promise<number | null> {
     try {
-      const res = await this.api('createForumTopic', { chat_id: chatId, name });
-      return res.result?.message_thread_id ?? null;
+      const res = await this.bot.api.createForumTopic(chatId, name);
+      return res.message_thread_id ?? null;
     } catch (e: any) {
       log.error('createForumTopic failed:', e?.message ?? e);
       return null;
@@ -363,41 +348,29 @@ export class TelegramBridge {
   }
 
   async deleteForumTopic(chatId: string | number, threadId: number): Promise<void> {
-    await this.api('deleteForumTopic', { chat_id: chatId, message_thread_id: threadId }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.deleteForumTopic(chatId, threadId).catch(() => {});
   }
 
   async pinMessage(chatId: string | number, messageId: number): Promise<void> {
-    await this.api('pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true }).catch(
-      () => {
-        /* ignore */
-      },
-    );
+    await this.bot.api.pinChatMessage(chatId, messageId, { disable_notification: true }).catch(() => {});
   }
 
   async deleteMessage(chatId: string | number, messageId: number): Promise<void> {
-    await this.api('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.deleteMessage(chatId, messageId).catch(() => {});
   }
 
   async sendTypingToThread(chatId: string | number, threadId: number): Promise<void> {
-    await this.api('sendChatAction', { chat_id: chatId, action: 'typing', message_thread_id: threadId }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.sendChatAction(chatId, 'typing', { message_thread_id: threadId }).catch(() => {});
   }
 
   // ── Bot commands & profile ──
 
   async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
-    await this.api('setMyCommands', { commands }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.setMyCommands(commands).catch(() => {});
   }
 
   async setMyProfilePhoto(photoUrl: string): Promise<void> {
-    // Download photo then upload as multipart
+    // grammY doesn't have a direct helper; use raw API
     try {
       const res = await fetch(photoUrl);
       const buffer = Buffer.from(await res.arrayBuffer());
@@ -410,7 +383,7 @@ export class TelegramBridge {
         'Content-Type: image/png\r\n\r\n';
       const end = '\r\n--' + boundary + '--\r\n';
       const payload = Buffer.concat([Buffer.from(body), buffer, Buffer.from(end)]);
-      await fetch(this.baseUrl + '/setMyProfilePhoto', {
+      await fetch('https://api.telegram.org/bot' + this.config.botToken + '/setMyProfilePhoto', {
         method: 'POST',
         headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
         body: payload,
@@ -421,22 +394,13 @@ export class TelegramBridge {
   }
 
   async answerCallback(callbackId: string, text?: string, showAlert = false): Promise<void> {
-    await this.api('answerCallbackQuery', {
-      callback_query_id: callbackId,
-      ...(text ? { text, show_alert: showAlert } : {}),
-    }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.answerCallbackQuery(callbackId, { text, show_alert: showAlert }).catch(() => {});
   }
 
   async editReplyMarkup(chatId: string | number, messageId: number, buttons: any[][]): Promise<void> {
-    await this.api('editMessageReplyMarkup', {
-      chat_id: chatId,
-      message_id: messageId,
-      reply_markup: { inline_keyboard: buttons },
-    }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api
+      .editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: buttons } })
+      .catch(() => {});
   }
 
   async sendReplyKeyboard(
@@ -458,7 +422,7 @@ export class TelegramBridge {
       },
       text,
     );
-    return res?.result?.message_id ?? null;
+    return res?.message_id ?? null;
   }
 
   async removeReplyKeyboard(chatId: string | number, text: string): Promise<number | null> {
@@ -470,26 +434,25 @@ export class TelegramBridge {
       },
       text,
     );
-    return res?.result?.message_id ?? null;
+    return res?.message_id ?? null;
   }
 
   async answerInlineQuery(queryId: string, results: any[]): Promise<void> {
-    await this.api('answerInlineQuery', {
-      inline_query_id: queryId,
-      results,
-      cache_time: 0,
-    }).catch(() => {
-      /* ignore */
-    });
+    await this.bot.api.answerInlineQuery(queryId, results, { cache_time: 0 }).catch(() => {});
   }
 
   // ── Internal ──
 
   private async sendText(method: string, params: Record<string, any>, text: string): Promise<any> {
-    // Try HTML first, fall back to plain text
-    return this.api(method, { ...params, text: markdownToHtml(text), parse_mode: 'HTML' }).catch(() =>
-      this.api(method, { ...params, text: markdownToText(text) }).catch(() => null),
-    );
+    try {
+      return await (this.bot.api.raw as any)[method]({ ...params, text: markdownToHtml(text), parse_mode: 'HTML' });
+    } catch {
+      try {
+        return await (this.bot.api.raw as any)[method]({ ...params, text: markdownToText(text) });
+      } catch {
+        return null;
+      }
+    }
   }
 
   private splitMessage(text: string): string[] {
@@ -509,53 +472,4 @@ export class TelegramBridge {
     }
     return chunks;
   }
-
-  private async getUpdates(): Promise<any[]> {
-    const res = await this.api('getUpdates', {
-      offset: this.offset,
-      timeout: 30,
-      allowed_updates: ['message', 'callback_query', 'message_reaction', 'inline_query'],
-    });
-    return res.result ?? [];
-  }
-
-  private saveOffset(): void {
-    try {
-      mkdirSync(dirname(OFFSET_FILE), { recursive: true });
-      writeFileSync(OFFSET_FILE, String(this.offset));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  private async api(method: string, body: any, retries = 3): Promise<any> {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch(this.baseUrl + '/' + method, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const json = (await res.json()) as any;
-        if (!json.ok) {
-          // Rate limit — retry with backoff
-          if (json.error_code === 429) {
-            const wait = (json.parameters?.retry_after ?? 5) * 1000;
-            await sleep(wait);
-            continue;
-          }
-          throw new Error('Telegram API error: ' + JSON.stringify(json));
-        }
-        return json;
-      } catch (err) {
-        if (attempt === retries) throw err;
-        // Network error — exponential backoff
-        await sleep(1000 * Math.pow(2, attempt));
-      }
-    }
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
