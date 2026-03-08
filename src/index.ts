@@ -139,6 +139,7 @@ async function main(): Promise<void> {
     // Status reactions on user's message
     const react = (emoji: string) => telegram.setReaction(chatId, messageId, emoji);
     await react('🤔');
+    await telegram.sendTyping(chatId);
     const cfg = getConfig(chatId);
 
     // Stream state — one message, continuously edited
@@ -224,7 +225,8 @@ async function main(): Promise<void> {
       const name = tool.toolName;
       phase = 'tools';
 
-      // React based on tool type
+      // React based on tool type + refresh typing
+      telegram.sendTyping(chatId);
       if (webTools.includes(name)) react('⚡');
       else if (codingTools.includes(name)) react('👨‍💻');
       else react('🔥');
