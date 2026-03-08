@@ -182,6 +182,7 @@ const MODE_ICONS: Record<string, string> = {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  if (config._file?.debug) log.setDebug(true);
   const botToken = await ensureBotToken(config);
   const bin = config.copilotBinary ?? findBin('copilot');
 

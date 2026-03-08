@@ -222,6 +222,7 @@ export class Session extends EventEmitter {
   }
 
   private handleEvent(e: SessionEvent): void {
+    log.debug(`[SDK event] ${e.type}:`, JSON.stringify(e.data ?? {}).slice(0, 500));
     const d = e.data as SessionEventData;
     switch (e.type) {
       case 'assistant.message_delta':
