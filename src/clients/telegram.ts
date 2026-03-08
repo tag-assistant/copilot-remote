@@ -31,6 +31,7 @@ export class TelegramClient implements Client {
     // Register bot command menu
     await this.bridge.setMyCommands([
       { command: 'new', description: 'Fresh session' },
+      { command: 'topic', description: 'Create forum topic (multi-session)' },
       { command: 'stop', description: 'Kill session' },
       { command: 'cd', description: 'Change working directory' },
       { command: 'status', description: 'Model, mode, cwd, quota' },

@@ -541,6 +541,38 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case '/topic': {
+        if (!client.createForumTopic) {
+          await client.sendMessage(chatId, '❌ Forum topics not supported on this platform.');
+          break;
+        }
+        const rawChatId = chatId.includes(':') ? chatId.split(':')[0] : chatId;
+        if (argStr === 'list') {
+          // List active topic sessions
+          const topicSessions = [...sessions.entries()].filter(([k]) => k.startsWith(rawChatId + ':'));
+          if (!topicSessions.length) {
+            await client.sendMessage(chatId, 'No active topic sessions. Use `/topic [name]` to create one.');
+            break;
+          }
+          const lines = topicSessions.map(([k, s]) => {
+            const tid = threadMap.get(k);
+            return '• Thread ' + tid + (s.alive ? ' ✅' : ' 💤');
+          });
+          await client.sendMessage(chatId, '📂 *Active Topics*\n' + lines.join('\n'));
+          break;
+        }
+        const topicName = argStr || 'Copilot Session';
+        const threadId = await client.createForumTopic(rawChatId, topicName);
+        if (!threadId) {
+          await client.sendMessage(chatId, '❌ Failed to create topic. Make sure the bot has forum topic permissions.');
+          break;
+        }
+        const topicKey = rawChatId + ':' + threadId;
+        threadMap.set(topicKey, threadId);
+        await getSession(topicKey);
+        await client.sendMessage(chatId, '📂 Created topic *' + topicName + '*. Open it to start chatting!');
+        break;
+      }
       case '/stop':
       case '/clear': {
         const s = sessions.get(chatId);
