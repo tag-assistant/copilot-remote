@@ -368,10 +368,6 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, '❌ Failed to send location: ' + e);
       }
     });
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send poll: ' + e);
-      }
-    });
     session.on('voice', async (info: { path: string; caption?: string }) => {
       try {
         const { InputFile } = await import('grammy');
