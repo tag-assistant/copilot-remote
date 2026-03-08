@@ -138,7 +138,7 @@ async function main(): Promise<void> {
       if (!text.trim()) return;
       if (!streamMsgId) {
         if (text.length < 15) return;
-        streamMsgId = await client.sendMessage(chatId, text, { replyTo: msgId, disableLinkPreview: true });
+        streamMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
       } else {
         await client.editMessage(chatId, streamMsgId, text);
       }
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
         await client.editMessage(chatId, streamMsgId, final.slice(0, 4096));
         await client.sendMessage(chatId, final.slice(4096), { disableLinkPreview: true });
       } else {
-        await client.sendMessage(chatId, final, { replyTo: msgId, disableLinkPreview: true });
+        await client.sendMessage(chatId, final, { disableLinkPreview: true });
       }
       await client.removeReaction(chatId, msgId);
     } catch (err) {
