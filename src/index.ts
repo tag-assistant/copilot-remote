@@ -1067,7 +1067,8 @@ async function main(): Promise<void> {
   }
 
   // ── Callbacks ──
-  client.onReaction = async (emoji, chatId, msgId) => {
+  client.onReaction = async (emoji, rawChatId, msgId, threadId) => {
+    const chatId = threadId ? sessionKey(rawChatId, threadId) : rawChatId;
     if (!pendingPerms.has(msgId)) return;
     const s = sessions.get(chatId);
     if (!s?.alive) return;
@@ -1083,7 +1084,8 @@ async function main(): Promise<void> {
   };
 
   // ── File handler — download and pass to Copilot ──
-  client.onFile = async (fileId, fileName, caption, chatId, msgId) => {
+  client.onFile = async (fileId, fileName, caption, rawChatId, msgId, threadId) => {
+    const chatId = threadId ? sessionKey(rawChatId, threadId) : rawChatId;
     if (!client.getFileUrl) return;
     const url = await client.getFileUrl(fileId);
     if (!url) {

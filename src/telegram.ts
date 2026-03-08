@@ -119,7 +119,9 @@ export class TelegramClient implements Client {
     // Callback queries
     this.bot.on('callback_query:data', async (ctx) => {
       const chatId = String(ctx.callbackQuery.message?.chat?.id ?? '');
-      const threadId = (ctx.callbackQuery.message as unknown as Record<string, unknown>)?.message_thread_id as number | undefined;
+      const threadId = (ctx.callbackQuery.message as unknown as Record<string, unknown>)?.message_thread_id as
+        | number
+        | undefined;
       if (!chatId) {
         await ctx.answerCallbackQuery();
         return;
@@ -149,10 +151,11 @@ export class TelegramClient implements Client {
     this.bot.on('message_reaction', async (ctx) => {
       const r = ctx.messageReaction;
       const chatId = String(r.chat?.id ?? '');
+      const threadId = (r as unknown as Record<string, unknown>)?.message_thread_id as number | undefined;
       const userId = String(r.user?.id ?? (r as unknown as Record<string, { id?: number }>).actor_chat?.id ?? '');
       if (userId !== this.pairedUser || !chatId) return;
       const emojis = (r.new_reaction ?? []).filter((e) => e.type === 'emoji').map((e) => e.emoji);
-      for (const emoji of emojis) this.onReaction?.(emoji, chatId, r.message_id);
+      for (const emoji of emojis) this.onReaction?.(emoji, chatId, r.message_id, threadId);
     });
   }
 
