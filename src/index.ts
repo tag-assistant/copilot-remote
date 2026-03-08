@@ -11,8 +11,15 @@ import { SessionStore } from './store.js';
 import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
 import { discoverAgents } from './agent-discovery.js';
 import { log } from './log.js';
-import { ReasoningLaneCoordinator } from './reasoning-lane.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- kept for future use
-import { markdownToTelegramHtml } from './format.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- kept for future use
+import {
+  PROMPT_COMMANDS, TOOL_LABELS, LIFECYCLE_REACTIONS, PERM_ICONS,
+  MODE_ICONS,
+  type ToolEvent, type UserInputRequest,
+} from './constants.js';
+import {
+  sendConfigMenu, handleConfigCallback,
+  type ConfigMenuDeps,
+} from './config-menu.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
@@ -21,25 +28,6 @@ import * as readline from 'readline';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
-
-/** Tool execution event emitted by the session */
-interface ToolEvent {
-  toolName: string;
-  arguments?: Record<string, string>;
-  success?: boolean;
-  detailedContent?: string;
-  images?: string[]; // base64 image data from tool results
-}
-
-/** User input request from the agent */
-interface UserInputRequest {
-  question: string;
-  choices?: string[];
-}
-
-/** ChatConfig boolean keys for dynamic toggle */
-
-/** Reasoning effort level (including 'none' for disabled) */
 
 function findBin(name: string): string {
   try {
@@ -113,77 +101,7 @@ function resolveGhToken(): string | undefined {
   }
 }
 
-// ── Passthrough commands: just prompt Copilot with context ──
-const PROMPT_COMMANDS: Record<string, { usage?: string; prompt: (args: string) => string }> = {
-  '/research': {
-    usage: '`/research <topic>`',
-    prompt: (a) => a, // agent selection handles research mode
-  },
-  '/diff': { prompt: () => 'Review all uncommitted changes. Show a summary and any issues.' },
-  '/review': { prompt: () => 'Thorough code review of recent changes. Check bugs, security, style.' },
-  '/share': { prompt: () => 'Share this conversation as a markdown summary.' },
-  '/init': { prompt: () => 'Initialize copilot-instructions.md with sensible defaults for this codebase.' },
-  '/tasks': { prompt: () => 'List all active background tasks and subagents.' },
-  '/instructions': { prompt: () => 'Show which custom instruction files are active in this repository.' },
-  '/skills': { prompt: () => 'List all available skills and their status.' },
-  '/mcp': { prompt: () => 'Show configured MCP servers and their status.' },
-};
 
-// ── Shared constants ──
-const TOOL_LABELS: Record<string, string> = {
-  read_file: '📖 Read',
-  edit_file: '✏️ Edit',
-  create_file: '📝 Create',
-  bash: '▶️ Run',
-  view: '👁 View',
-  list_dir: '📂 List',
-  search: '🔍 Search',
-  grep_search: '🔍 Search',
-  think: '💡 Think',
-  glob: '📂 Glob',
-  delete_file: '🗑 Delete',
-  write_file: '📝 Write',
-  web_fetch: '🌐 Fetch',
-  web_search: '🔎 Search',
-};
-
-// Reactions for different lifecycle events
-const LIFECYCLE_REACTIONS: Record<string, string> = {
-  received: '👀',        // 👀 message received, starting to think
-  thinking: '🤔',        // 🤔 reasoning/thinking
-  tool_call: '🔨',       // 🔨 executing tools
-  writing: '✍️',       // ✍️ generating response
-  web: '🌐',             // 🌐 fetching from web
-  file_edit: '✏️',     // ✏️ editing files
-  command: '▶️',       // ▶️ running commands
-  search: '🔍',          // 🔍 searching
-  complete: '✅',            // ✅ done
-  error: '💥',           // 💥 error
-  steering: '⚡',            // ⚡ steering/immediate
-};
-
-const PERM_ICONS: Record<string, string> = {
-  shell: '⚡',
-  write: '✏️',
-  url: '🌐',
-  mcp: '🔌',
-  read: '📖',
-};
-
-const PERM_KIND_LABELS: Record<PermKind, string> = {
-  read: '📖 Read files',
-  write: '✏️ Write files',
-  shell: '⚡ Run commands',
-  url: '🌐 Fetch URLs',
-  mcp: '🔌 MCP tools',
-  'custom-tool': '🔧 Custom tools',
-};
-
-const MODE_ICONS: Record<string, string> = {
-  interactive: '⚡',
-  plan: '📋',
-  autopilot: '🚀',
-};
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -211,56 +129,54 @@ async function main(): Promise<void> {
   const pendingPerms = new Map<number, string>();
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
-  let cachedModels: ModelInfo[] = [];
   // Per-session usage tracking (keyed by session key)
-  const lastUsageMap = new Map<string, any>();
+  const lastUsageMap = new Map<string, { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; duration: number }>();
   const contextInfoMap = new Map<string, { tokenLimit: number; currentTokens: number; messagesLength: number }>();
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
 
   // Wrap client methods to auto-resolve session keys (chatId:threadId → chatId + threadId param)
-  const origSendMessage = client.sendMessage.bind(client);
-  const origSendButtons = client.sendButtons.bind(client);
-  const origEditMessage = client.editMessage.bind(client);
-  const origEditButtons = client.editButtons.bind(client);
-  const origSendTyping = client.sendTyping.bind(client);
-  const origSetReaction = client.setReaction.bind(client);
-  const origRemoveReaction = client.removeReaction.bind(client);
-
   const resolveKey = (key: string): [string, number | undefined] => {
     const tid = threadMap.get(key);
     const cid = key.includes(':') ? key.split(':')[0] : key;
     return [cid, tid];
   };
 
+  // Proxy client methods to resolve composite session keys automatically
+  const proxyMethods = ['sendMessage', 'sendButtons', 'editMessage', 'editButtons', 'sendTyping', 'setReaction', 'removeReaction'] as const;
+  type ProxiedMethod = typeof proxyMethods[number];
+  const originals = Object.fromEntries(
+    proxyMethods.map((m) => [m, (client[m] as (...args: unknown[]) => unknown).bind(client)])
+  ) as Record<ProxiedMethod, (...args: unknown[]) => unknown>;
+
   client.sendMessage = (key: string, text: string, opts?: MessageOptions) => {
     const [cid, tid] = resolveKey(key);
-    return origSendMessage(cid, text, { ...opts, threadId: tid });
+    return (originals.sendMessage as typeof client.sendMessage)(cid, text, { ...opts, threadId: tid });
   };
-  client.sendButtons = (key: string, text: string, buttons: Button[][]) => {
+  client.sendButtons = (key: string, text: string, buttons: Button[][], _tid?: number) => {
     const [cid, tid] = resolveKey(key);
-    return origSendButtons(cid, text, buttons, tid);
+    return (originals.sendButtons as typeof client.sendButtons)(cid, text, buttons, tid);
   };
   client.editMessage = (key: string, msgId: number, text: string) => {
     const [cid] = resolveKey(key);
-    return origEditMessage(cid, msgId, text);
+    return (originals.editMessage as typeof client.editMessage)(cid, msgId, text);
   };
   client.editButtons = (key: string, msgId: number, text: string, buttons: Button[][]) => {
     const [cid] = resolveKey(key);
-    return origEditButtons(cid, msgId, text, buttons);
+    return (originals.editButtons as typeof client.editButtons)(cid, msgId, text, buttons);
   };
   client.sendTyping = (key: string) => {
     const [cid, tid] = resolveKey(key);
-    return origSendTyping(cid, tid);
+    return (originals.sendTyping as typeof client.sendTyping)(cid, tid);
   };
   client.setReaction = (key: string, msgId: number, emoji: string) => {
     const [cid] = resolveKey(key);
-    return origSetReaction(cid, msgId, emoji);
+    return (originals.setReaction as typeof client.setReaction)(cid, msgId, emoji);
   };
   client.removeReaction = (key: string, msgId: number) => {
     const [cid] = resolveKey(key);
-    return origRemoveReaction(cid, msgId);
+    return (originals.removeReaction as typeof client.removeReaction)(cid, msgId);
   };
 
   if (client.sendDraft) {
@@ -285,14 +201,13 @@ async function main(): Promise<void> {
   // Register persistent listeners on a session (called once per session, not per message)
   function registerSessionListeners(session: Session, chatId: string) {
     session.on('usage', (u: Record<string, unknown>) => {
-      const lastUsage = {
+      lastUsageMap.set(chatId, {
         model: u.model as string,
         inputTokens: u.inputTokens as number,
         outputTokens: u.outputTokens as number,
         cacheReadTokens: u.cacheReadTokens as number,
         duration: u.duration as number,
-      };
-      lastUsageMap.set(chatId, lastUsage);
+      });
     });
     session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
       contextInfoMap.set(chatId, info);
@@ -307,109 +222,90 @@ async function main(): Promise<void> {
       }
     });
     session.on('notification', async (text: string) => {
-      await client.sendMessage(chatId, '🔔 ' + text);
+      await client.sendMessage(chatId, `🔔 ${text}`);
     });
-    session.on('file', async (info: { path: string; caption?: string }) => {
-      try {
-        const { InputFile } = await import('grammy');
-        const ext = info.path.split('.').pop()?.toLowerCase() ?? '';
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
-        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-        const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm'];
-        const file = new InputFile(info.path);
-        if (audioExts.includes(ext)) {
-          await tc.sendAudio(numericId, file, { caption: info.caption });
-        } else if (imageExts.includes(ext)) {
-          await tc.sendPhoto(numericId, file, { caption: info.caption });
-        } else if (videoExts.includes(ext)) {
-          await tc.sendVideo(numericId, file, { caption: info.caption });
-        } else {
-          await tc.sendDocument(numericId, file, { caption: info.caption });
+
+    // Helper: resolve bot API + numeric chat ID for direct Telegram API calls
+    type BotApi = Record<string, (...args: unknown[]) => unknown>;
+    const getBotApi = (): { tc: BotApi; numericId: number } => {
+      const tc = (client as unknown as { bot?: { api: BotApi } }).bot?.api;
+      if (!tc) throw new Error('No bot API');
+      const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+      return { tc, numericId };
+    };
+
+    // Helper: wrap a tool event handler with standard error reporting
+    const toolHandler = <T>(event: string, handler: (info: T) => Promise<void>) => {
+      session.on(event, async (info: T) => {
+        try {
+          await handler(info);
+        } catch (e) {
+          await client.sendMessage(chatId, `❌ Failed to ${event.replace('_', ' ')}: ${e}`);
         }
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send file: ' + e);
-      }
+      });
+    };
+
+    toolHandler<{ path: string; caption?: string }>('file', async (info) => {
+      const { InputFile } = await import('grammy');
+      const { tc, numericId } = getBotApi();
+      const ext = info.path.split('.').pop()?.toLowerCase() ?? '';
+      const file = new InputFile(info.path);
+      const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
+      const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+      const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm'];
+      if (audioExts.includes(ext)) await tc.sendAudio(numericId, file, { caption: info.caption });
+      else if (imageExts.includes(ext)) await tc.sendPhoto(numericId, file, { caption: info.caption });
+      else if (videoExts.includes(ext)) await tc.sendVideo(numericId, file, { caption: info.caption });
+      else await tc.sendDocument(numericId, file, { caption: info.caption });
     });
-    session.on('photo', async (info: { path: string; caption?: string }) => {
-      try {
-        const { InputFile } = await import('grammy');
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        const source = info.path.startsWith('http') ? info.path : new InputFile(info.path);
-        await tc.sendPhoto(numericId, source, { caption: info.caption });
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send photo: ' + e);
-      }
+
+    toolHandler<{ path: string; caption?: string }>('photo', async (info) => {
+      const { InputFile } = await import('grammy');
+      const { tc, numericId } = getBotApi();
+      const source = info.path.startsWith('http') ? info.path : new InputFile(info.path);
+      await tc.sendPhoto(numericId, source, { caption: info.caption });
     });
-    session.on('location', async (info: { lat: number; lon: number; title?: string }) => {
-      try {
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        if (info.title) {
-          await tc.sendVenue(numericId, info.lat, info.lon, info.title, '');
-        } else {
-          await tc.sendLocation(numericId, info.lat, info.lon);
-        }
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send location: ' + e);
-      }
+
+    toolHandler<{ lat: number; lon: number; title?: string }>('location', async (info) => {
+      const { tc, numericId } = getBotApi();
+      if (info.title) await tc.sendVenue(numericId, info.lat, info.lon, info.title, '');
+      else await tc.sendLocation(numericId, info.lat, info.lon);
     });
-    session.on('voice', async (info: { path: string; caption?: string }) => {
-      try {
-        const { InputFile } = await import('grammy');
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        await tc.sendVoice(numericId, new InputFile(info.path), { caption: info.caption });
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send voice: ' + e);
-      }
+
+    toolHandler<{ path: string; caption?: string }>('voice', async (info) => {
+      const { InputFile } = await import('grammy');
+      const { tc, numericId } = getBotApi();
+      await tc.sendVoice(numericId, new InputFile(info.path), { caption: info.caption });
     });
-    session.on('pin', async (info: { messageId: number }) => {
-      try {
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        await tc.pinChatMessage(numericId, info.messageId);
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to pin: ' + e);
-      }
+
+    toolHandler<{ messageId: number }>('pin', async (info) => {
+      const { tc, numericId } = getBotApi();
+      await tc.pinChatMessage(numericId, info.messageId);
     });
+
     session.on('create_topic', async (info: { name: string; iconColor?: number; resolve: (id: number) => void }) => {
       try {
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
+        const { tc, numericId } = getBotApi();
         const result = await tc.createForumTopic(numericId, info.name, { icon_color: info.iconColor });
-        info.resolve(result.message_thread_id);
+        info.resolve((result as { message_thread_id: number }).message_thread_id);
       } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to create topic: ' + e);
+        await client.sendMessage(chatId, `❌ Failed to create topic: ${e}`);
         info.resolve(0);
       }
     });
+
     session.on('react_to', async (info: { messageId: number; emoji: string }) => {
-      try {
-        client.setReaction(chatId, info.messageId, info.emoji);
-      } catch { /* ignore */ }
+      try { client.setReaction(chatId, info.messageId, info.emoji); } catch { /* ignore */ }
     });
-    session.on('contact', async (info: { phone: string; firstName: string; lastName?: string }) => {
-      try {
-        const tc = (client as any).bot?.api;
-        if (!tc) throw new Error('No bot API');
-        const numericId = chatId.includes(':') ? Number(chatId.split(':')[0]) : Number(chatId);
-        await tc.sendContact(numericId, info.phone, info.firstName, { last_name: info.lastName });
-      } catch (e) {
-        await client.sendMessage(chatId, '❌ Failed to send contact: ' + e);
-      }
+
+    toolHandler<{ phone: string; firstName: string; lastName?: string }>('contact', async (info) => {
+      const { tc, numericId } = getBotApi();
+      await tc.sendContact(numericId, info.phone, info.firstName, { last_name: info.lastName });
     });
+
     session.on('hook:error', async (info: { error?: unknown; message?: string }) => {
       const msg = info.message ?? (info.error instanceof Error ? info.error.message : String(info.error ?? 'Unknown error'));
-      await client.sendMessage(chatId, '⚠️ *SDK Error:* ' + msg);
+      await client.sendMessage(chatId, `⚠️ *SDK Error:* ${msg}`);
     });
     session.on('hook:session_start', () => log.debug('[hook] Session started for chat', chatId));
     session.on('hook:session_end', () => log.debug('[hook] Session ended for chat', chatId));
@@ -515,6 +411,19 @@ async function main(): Promise<void> {
     return s;
   }
 
+  // ── Config menu dependencies (shared with config-menu module) ──
+  const configMenuDeps: ConfigMenuDeps = {
+    client,
+    configStore,
+    sessions,
+    sessionStore,
+    cachedModels: [],
+    setCachedModels: (models: ModelInfo[]) => { configMenuDeps.cachedModels = models; },
+    workDir: (id: string) => workDir(id),
+    bin,
+    getSession,
+  };
+
   // ── Prompt handler (streaming + reactions) ──
   async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
     let session: Session;
@@ -564,7 +473,6 @@ async function main(): Promise<void> {
     let thinkingText = '',
       responseText = '';
     let intentText = '';
-    const lastUsage: unknown = null; // eslint-disable-line @typescript-eslint/no-unused-vars
     const toolLines: string[] = [];
     let activeToolStatus = ''; // current tool being executed (always shown)
     let lastEdit = 0,
@@ -1438,7 +1346,7 @@ async function main(): Promise<void> {
         break;
       }
       case '/config': {
-        await sendConfigMenu(chatId);
+        await sendConfigMenu(chatId, configMenuDeps);
         break;
       }
       case '/help':
@@ -1488,233 +1396,6 @@ async function main(): Promise<void> {
   }
 
   // ── Config menu ──
-  async function sendConfigMenu(chatId: string, editId?: number) {
-    const c = cfg(chatId);
-    // Prefix callback data with session key so callbacks in topics resolve correctly
-    // Telegram doesn't include message_thread_id in callback_query.message
-    const pfx = (d: string) => `@${chatId}|${d}`;
-
-    // Get current mode from config (not session — session may be killed during mode switch)
-    const mode = c.mode ?? 'interactive';
-    const globalCfg = configStore.raw();
-
-    const MODE_STYLES: Record<string, string> = {
-      interactive: 'primary',
-      plan: 'success',
-      autopilot: 'danger',
-    };
-    const MODE_BTN_LABELS: Record<string, string> = {
-      interactive: '⚡ Ask',
-      plan: '📋 Plan',
-      autopilot: '🚀 Auto',
-    };
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const modeBtn = (m: string) => ({
-      text: MODE_BTN_LABELS[m] ?? m,
-      data: pfx('mode:' + m),
-      ...(m === mode ? { style: MODE_STYLES[m] } : {}),
-    });
-    const text =
-      '⚙️ *Settings*\nModel: `' +
-      c.model +
-      '`\n' +
-      (c.autopilot ? '🟢 Autopilot' : '🔴 Ask before acting') +
-      (c.agent ? '\nAgent: `' + c.agent + '`' : '') +
-      (globalCfg.provider ? '\nProvider: Custom (' + globalCfg.provider.baseUrl + ')' : '') +
-      (globalCfg.mcpServers ? '\nMCP: ' + Object.keys(globalCfg.mcpServers).length + ' servers' : '');
-    const buttons = [
-      [{
-        text: c.autopilot ? '🟢 Autopilot ON' : '🔴 Autopilot OFF',
-        data: pfx('cfg:autopilot'),
-        style: c.autopilot ? 'danger' : 'primary',
-      }],
-      [{ text: '🤖 Change Model', data: pfx('cfg:modelPicker') }],
-      [{ text: '🧠 Reasoning: ' + (c.reasoningEffort || 'Default'), data: pfx('cfg:reasoning') }],
-      [{ text: '📨 Messages: ' + (c.messageMode || 'Default'), data: pfx('cfg:messageMode') }],
-      [
-        {
-          text: '🔧 Tools' + (c.excludedTools?.length ? ': ' + c.excludedTools.length + ' disabled' : ''),
-          data: pfx('cfg:tools'),
-        },
-      ],
-      [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
-      [{ text: '🎨 Display', data: pfx('cfg:display') }],
-      [{ text: '📊 Usage', data: pfx('cfg:usage') }],
-    ];
-    if (editId) {
-      await client.editButtons(chatId, editId, text, buttons);
-    } else {
-      await client.sendButtons(chatId, text, buttons);
-    }
-  }
-
-  async function sendToolsMenu(chatId: string, editId: number) {
-    const c = cfg(chatId);
-    const pfx = (d: string) => `@${chatId}|${d}`;
-
-    // Get tool list - need a session
-    let tools: string[] = [];
-    const s = sessions.get(chatId);
-    if (s?.alive) {
-      try {
-        const r = await s.listTools();
-        tools = (r?.tools ?? []).map((t: any) => t.name).filter(Boolean);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (!tools.length) {
-      await client.editButtons(
-        chatId,
-        editId,
-        '🔧 *Tools*\nSend a message first to start a session, then open Tools.',
-        [[{ text: '← Back', data: pfx('cfg:back') }]],
-      );
-      return;
-    }
-
-    const excluded = new Set(c.excludedTools ?? []);
-    // 2 tools per row
-    const buttons: any[][] = [];
-    for (let i = 0; i < tools.length; i += 2) {
-      buttons.push(
-        tools.slice(i, i + 2).map((t) => ({
-          text: t,
-          data: pfx('tool:' + t),
-          ...(excluded.has(t) ? {} : { style: 'success' }),
-        })),
-      );
-    }
-    buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
-
-    const excludedCount = excluded.size;
-    await client.editButtons(
-      chatId,
-      editId,
-      '🔧 *Tools* (' + tools.length + ')' + (excludedCount ? '\n' + excludedCount + ' disabled' : '\nAll enabled'),
-      buttons,
-    );
-  }
-
-  async function sendReasoningMenu(chatId: string, editId: number) {
-    const c = cfg(chatId);
-    const pfx = (d: string) => `@${chatId}|${d}`;
-    // Ensure models are cached
-    if (!cachedModels.length) {
-      const s = sessions.get(chatId);
-      if (s?.alive) {
-        try { cachedModels = await s.listModels(); } catch { /* ignore */ }
-      }
-    }
-    // Find current model's supported reasoning efforts
-    const modelInfo = cachedModels.find((m) => (m.id ?? m.name) === c.model);
-    const supported: string[] = modelInfo?.supportedReasoningEfforts ?? [];
-    if (!supported.length) {
-      await client.editButtons(
-        chatId,
-        editId,
-        '🧠 *Reasoning Effort*\n⚠️ ' + c.model + ' does not support reasoning effort.',
-        [[{ text: '← Back', data: pfx('cfg:back') }]],
-      );
-      return;
-    }
-    const labels: Record<string, string> = {
-      low: 'Low',
-      medium: 'Medium',
-      high: 'High',
-      xhigh: 'XHigh',
-    };
-    const levels = ['', ...supported];
-    const allLabels: Record<string, string> = { '': 'Default', ...labels };
-    const current = c.reasoningEffort || '';
-    const buttons = levels.map((l) => [
-      {
-        text: allLabels[l] ?? l,
-        data: pfx('reason:' + (l || 'default')),
-        ...(l === current ? { style: 'success' } : {}),
-      },
-    ]);
-    const defaultNote = modelInfo?.defaultReasoningEffort ? ` (default: ${modelInfo.defaultReasoningEffort})` : '';
-    buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
-    await client.editButtons(
-      chatId,
-      editId,
-      '🧠 *Reasoning Effort*' + defaultNote + '\nHigher = smarter but slower/costlier:',
-      buttons,
-    );
-  }
-
-  async function sendDisplayMenu(chatId: string, editId: number) {
-    const c = cfg(chatId);
-    const pfx = (d: string) => `@${chatId}|${d}`;
-    const toggle = (on: boolean, label: string, data: string) => ({
-      text: label,
-      data,
-      ...(on ? { style: 'success' } : {}),
-    });
-    const buttons = [
-      [toggle(c.showThinking, 'Thinking', pfx('dsp:showThinking')), toggle(c.showTools, 'Tools', pfx('dsp:showTools'))],
-      [toggle(c.showReactions, 'Reactions', pfx('dsp:showReactions'))],
-      [toggle(c.infiniteSessions !== false, 'Infinite Sessions', pfx('dsp:infiniteSessions'))],
-      [{ text: '← Back', data: pfx('cfg:back') }],
-    ];
-    await client.editButtons(chatId, editId, '🎨 *Display*\nToggle what shows in responses:', buttons);
-  }
-
-  async function sendSecurityMenu(chatId: string, editId: number) {
-    const c = cfg(chatId);
-    const pfx = (d: string) => `@${chatId}|${d}`;
-    const buttons: { text: string; data: string; style?: string }[][] = [];
-    for (const [kind, label] of Object.entries(PERM_KIND_LABELS)) {
-      const on = c.autoApprove[kind as PermKind];
-      buttons.push([{ text: label, data: pfx('sec:' + kind), ...(on ? { style: 'success' } : {}) }]);
-    }
-    const allOn = Object.values(c.autoApprove).every(Boolean);
-    buttons.push([
-      {
-        text: allOn ? 'Revoke All' : 'Approve All',
-        data: pfx('sec:toggle-all'),
-        ...(allOn ? { style: 'danger' } : { style: 'success' }),
-      },
-    ]);
-    buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
-    await client.editButtons(chatId, editId, '🔒 *Tool Security*\nAuto-approve by type:', buttons);
-  }
-
-  async function sendModelPicker(chatId: string, editId: number) {
-    const c = cfg(chatId);
-    const pfx = (d: string) => `@${chatId}|${d}`;
-    // Ensure we have models cached - create session if needed
-    if (!cachedModels.length) {
-      try {
-        let s = sessions.get(chatId);
-        if (!s?.alive) s = await getSession(chatId);
-        cachedModels = await s.listModels();
-        log.info(
-          'Models:',
-          cachedModels.map((m) => m.id ?? m.name ?? m),
-        );
-      } catch {
-        /* ignore */
-      }
-    }
-    const modelIds = cachedModels.length
-      ? cachedModels.map((m) => m.id ?? m.name ?? String(m)).filter(Boolean)
-      : ['claude-sonnet-4', 'gpt-5.2', 'gemini-3-pro-preview'];
-    const buttons: { text: string; data: string }[][] = [];
-    for (let i = 0; i < modelIds.length; i += 2) {
-      buttons.push(
-        modelIds
-          .slice(i, i + 2)
-          .map((m: string) => ({ text: m, data: pfx('model:' + m), ...(m === c.model ? { style: 'success' } : {}) })),
-      );
-    }
-    buttons.push([{ text: '← Back', data: pfx('cfg:back') }]);
-    await client.editButtons(chatId, editId, '🤖 *Select Model*', buttons);
-  }
-
-  // ── Callbacks ──
   client.onReaction = async (emoji, rawChatId, msgId, threadId) => {
     const chatId = threadId ? sessionKey(rawChatId, threadId) : rawChatId;
     if (!pendingPerms.has(msgId)) return;
@@ -1872,270 +1553,8 @@ async function main(): Promise<void> {
       }
       return;
     }
-    if (data.startsWith('reason:')) {
-      const level = data.slice(7) === 'default' ? '' : data.slice(7);
-      const c = cfg(chatId);
-      c.reasoningEffort = level;
-      setCfg(chatId, c);
-      // Restart to apply
-      const old = sessions.get(chatId);
-      const savedId = old?.sessionId ?? sessionStore.get(chatId)?.sessionId;
-      if (old?.alive) await old.disconnect();
-      sessions.delete(chatId);
-      if (savedId) {
-        const s = new Session();
-        try {
-          await s.resume(savedId, {
-            cwd: workDir(chatId),
-            binary: bin,
-            model: c.model,
-            autopilot: c.autopilot,
-            reasoningEffort: level as 'low' | 'medium' | 'high' | 'xhigh',
-          });
-          sessions.set(chatId, s);
-        } catch {
-          sessionStore.delete(chatId);
-          await getSession(chatId);
-        }
-      }
-      return sendConfigMenu(chatId, msgId);
-    }
-    if (data.startsWith('input:')) {
-      const answer = data.slice(6);
-      const s = sessions.get(chatId);
-      if (s?.alive) s.answerInput(answer);
-      await client.editButtons(chatId, msgId, '❓ → ' + answer, []);
-      return;
-    }
-    // Agent selection from /agent button menu
-    // Session resume from /sessions menu
-    if (data.startsWith('session:')) {
-      const sessionId = data.slice(8);
-      const entry = sessionStore.list().find(([, e]) => e.sessionId === sessionId);
-      if (!entry) {
-        await client.editButtons(chatId, msgId, '❌ Session not found.', []);
-        return;
-      }
-      // Kill current session if any
-      const old = sessions.get(chatId);
-      if (old?.alive) await old.disconnect();
-      sessions.delete(chatId);
-      // Point the session store at the selected session, then let getSession resume it
-      const e = entry[1];
-      sessionStore.set(chatId, { sessionId, cwd: e.cwd, model: e.model, createdAt: e.createdAt, lastUsed: Date.now() });
-      try {
-        await getSession(chatId);
-        await client.editButtons(chatId, msgId, '✅ Resumed session `' + sessionId.slice(0, 8) + '`', []);
-      } catch (err) {
-        await client.editButtons(chatId, msgId, '❌ ' + err, []);
-      }
-      return;
-    }
-    // Prompt file selection
-    if (data.startsWith('prompt:')) {
-      const name = data.slice(7);
-      // Re-scan for the prompt file
-      const dir = workDir(chatId);
-      const promptDirs = [
-        path.join(dir, '.github', 'prompts'),
-        path.join(process.env.HOME ?? '', '.copilot', 'prompts'),
-        path.join(process.env.HOME ?? '', '.github', 'prompts'),
-      ];
-      for (const pd of promptDirs) {
-        const fp = path.join(pd, name + '.prompt.md');
-        if (fs.existsSync(fp)) {
-          const content = fs.readFileSync(fp, 'utf-8').replace(/^---\n[\s\S]*?---\n/, '').trim();
-          await client.editButtons(chatId, msgId, '📝 Running `' + name + '`...', []);
-          await handlePrompt(chatId, msgId, content);
-          return;
-        }
-      }
-      await client.editButtons(chatId, msgId, '❌ Prompt `' + name + '` not found.', []);
-      return;
-    }
-    if (data.startsWith('agent:')) {
-      const agentName = data.slice(6);
-      const s = sessions.get(chatId);
-      if (!s?.alive) {
-        await client.editButtons(chatId, msgId, '❌ No active session.', []);
-        return;
-      }
-      try {
-        if (agentName === '__deselect__') {
-          await s.deselectAgent();
-          await client.editButtons(chatId, msgId, '🤖 Agent deselected.', []);
-        } else {
-          await s.selectAgent(agentName);
-          await client.editButtons(chatId, msgId, '🤖 Agent: `' + agentName + '`', []);
-        }
-      } catch (e) {
-        await client.editButtons(chatId, msgId, '❌ ' + e, []);
-      }
-      return;
-    }
-    if (data === 'cfg:reasoning') return sendReasoningMenu(chatId, msgId);
-    if (data === 'cfg:display') return sendDisplayMenu(chatId, msgId);
-    if (data === 'cfg:security') return sendSecurityMenu(chatId, msgId);
-    if (data === 'cfg:modelPicker') return sendModelPicker(chatId, msgId);
-    if (data === 'cfg:usage') {
-      const s = sessions.get(chatId);
-      const lines: string[] = [];
-      if (s?.alive) {
-        try {
-          const q = await s.getQuota();
-          const snaps = q?.quotaSnapshots;
-          if (snaps && typeof snaps === 'object') {
-            for (const [name, snap] of Object.entries(snaps) as [string, any][]) {
-              const used = snap.usedRequests ?? 0;
-              const total = snap.entitlementRequests ?? 0;
-              const pct = snap.remainingPercentage ?? 100;
-              lines.push(`*${name}*: ${used}/${total} · ${pct}% left`);
-            }
-          }
-        } catch { /* ignore */ }
-      }
-      const ci = contextInfoMap.get(chatId);
-      if (ci) {
-        const pct = ci.tokenLimit ? Math.round((ci.currentTokens / ci.tokenLimit) * 100) : 0;
-        lines.push(`📊 ${pct}% context · ${ci.messagesLength} msgs`);
-      }
-      const lu = lastUsageMap.get(chatId);
-      if (lu) {
-        const parts: string[] = [];
-        if (lu.model) parts.push('Model: `' + lu.model + '`');
-        if (lu.inputTokens || lu.outputTokens) parts.push(`Last: ${lu.inputTokens ?? 0}→${lu.outputTokens ?? 0} tokens`);
-        if (lu.cacheReadTokens) parts.push(`Cache: ${lu.cacheReadTokens} read`);
-        if (lu.duration) parts.push(`Time: ${(lu.duration / 1000).toFixed(1)}s`);
-        lines.push(parts.join(' · '));
-      }
-      await client.editButtons(
-        chatId, msgId,
-        '📊 *Usage*\n' + (lines.length ? lines.join('\n') : 'No data yet — send a message first.'),
-        [[{ text: '← Back', data: `@${chatId}|cfg:back` }]],
-      );
-      return;
-    }
-    if (data === 'cfg:back') return sendConfigMenu(chatId, msgId);
-    if (data === 'cfg:messageMode') {
-      const c = cfg(chatId);
-      const cycle: Array<'' | 'enqueue' | 'immediate'> = ['', 'enqueue', 'immediate'];
-      const idx = cycle.indexOf(c.messageMode || '');
-      c.messageMode = cycle[(idx + 1) % cycle.length];
-      setCfg(chatId, c);
-      // Update session if alive
-      const s = sessions.get(chatId);
-      if (s?.alive) s.messageMode = c.messageMode || undefined;
-      return sendConfigMenu(chatId, msgId);
-    }
-    if (data === 'cfg:tools') {
-      return sendToolsMenu(chatId, msgId);
-    }
-    if (data.startsWith('tool:')) {
-      const toolName = data.slice(5);
-      const c = cfg(chatId);
-      const excluded = new Set(c.excludedTools ?? []);
-      if (excluded.has(toolName)) {
-        excluded.delete(toolName);
-      } else {
-        excluded.add(toolName);
-      }
-      c.excludedTools = [...excluded];
-      setCfg(chatId, c);
-      // Re-render first (session still alive to list tools), then kill session
-      await sendToolsMenu(chatId, msgId);
-      // Kill existing session so next message picks up new tool config
-      const old = sessions.get(chatId);
-      if (old?.alive) await old.disconnect();
-      sessions.delete(chatId);
-      return;
-    }
-    if (data.startsWith('model:')) {
-      const c = cfg(chatId);
-      c.model = data.slice(6);
-      setCfg(chatId, c);
-      const s = sessions.get(chatId);
-      if (s?.alive)
-        try {
-          await s.setModel(c.model);
-        } catch {
-          /* ignore */
-        }
-      return sendConfigMenu(chatId, msgId);
-    }
-    if (data.startsWith('dsp:')) {
-      const key = data.slice(4) as keyof ChatConfig;
-      const c = cfg(chatId);
-      if (key === 'infiniteSessions') {
-        c.infiniteSessions = c.infiniteSessions === false ? undefined : false;
-        setCfg(chatId, c);
-        return sendDisplayMenu(chatId, msgId);
-      }
-      const rec = c as unknown as Record<string, unknown>;
-      if (key in c && typeof rec[key] === 'boolean') {
-        rec[key] = !rec[key];
-        setCfg(chatId, c);
-        const label = key.replace('show', '');
-        const state = rec[key] ? '✅ ON' : '⬜ OFF';
-        client.answerCallback?.(callbackId, label + ': ' + state);
-      }
-      return sendDisplayMenu(chatId, msgId);
-    }
-    if (data.startsWith('sec:')) {
-      const c = cfg(chatId);
-      if (data === 'sec:toggle-all') {
-        const allOn = Object.values(c.autoApprove).every(Boolean);
-        for (const k of Object.keys(c.autoApprove)) c.autoApprove[k as PermKind] = !allOn;
-      } else {
-        const kind = data.slice(4) as PermKind;
-        c.autoApprove[kind] = !c.autoApprove[kind];
-      }
-      setCfg(chatId, c);
-      return sendSecurityMenu(chatId, msgId);
-    }
-    if (data === 'cfg:autopilot') {
-      const c = cfg(chatId);
-      c.autopilot = !c.autopilot;
-      c.mode = c.autopilot ? 'autopilot' : 'interactive';
-      setCfg(chatId, c);
-      // Kill old session — next message will create a fresh one with new config
-      const old = sessions.get(chatId);
-      if (old?.alive) { await old.disconnect(); }
-      sessions.delete(chatId);
-      sessionStore.delete(chatId);
-      return sendConfigMenu(chatId, msgId);
-    }
-    if (data.startsWith('mode:')) {
-      const newMode = data.slice(5) as 'interactive' | 'plan' | 'autopilot';
-      const c = cfg(chatId);
-      log.debug(`Mode switch: ${c.mode} → ${newMode} [${chatId}]`);
-      c.mode = newMode;
-      c.autopilot = newMode === 'autopilot';
-      setCfg(chatId, c);
-      // Kill old session — next message will create a fresh one with new config
-      const old = sessions.get(chatId);
-      if (old?.alive) {
-        log.debug(`Killing session for mode switch [${chatId}]`);
-        await old.disconnect();
-      }
-      sessions.delete(chatId);
-      sessionStore.delete(chatId);
-      log.info(`Mode: ${newMode} [${chatId}]`);
-      return sendConfigMenu(chatId, msgId);
-    }
-    if (data.startsWith('cfg:')) {
-      const key = data.slice(4) as keyof ChatConfig;
-      const c = cfg(chatId);
-      const rec = c as unknown as Record<string, unknown>;
-      if (key in c && typeof rec[key] === 'boolean') {
-        rec[key] = !rec[key];
-        setCfg(chatId, c);
-        if (key === 'autopilot') {
-          const s = sessions.get(chatId);
-          if (s?.alive) s.autopilot = c.autopilot;
-        }
-        return sendConfigMenu(chatId, msgId);
-      }
-    }
+    // Delegate config-related callbacks to config-menu module
+    if (await handleConfigCallback(data, chatId, msgId, callbackId, configMenuDeps)) return;
   };
 
   // ── Shutdown ──

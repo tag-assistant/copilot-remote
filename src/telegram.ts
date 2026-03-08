@@ -23,6 +23,8 @@ export interface TelegramConfig {
   profilePhoto?: string;
 }
 
+type RawApi = Record<string, (...args: unknown[]) => unknown>;
+
 export class TelegramClient implements Client {
   readonly name = 'telegram';
   private bot: Bot<MyContext>;
@@ -40,6 +42,9 @@ export class TelegramClient implements Client {
 
   /** Expose bot API for draft stream integration. */
   get api() { return this.bot.api; }
+
+  /** Typed accessor for raw API methods (avoids repeated casts). */
+  private get raw(): RawApi { return this.bot.api.raw as RawApi; }
 
   constructor(private config: TelegramConfig) {
     this.bot = new Bot<MyContext>(config.botToken);
@@ -270,7 +275,7 @@ export class TelegramClient implements Client {
 
     for (const chunk of chunks) {
       try {
-        const res = await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)['sendMessage']({
+        const res = await this.raw['sendMessage']({
           chat_id: chatId,
           ...extra,
           text: chunk.html,
@@ -280,7 +285,7 @@ export class TelegramClient implements Client {
       } catch {
         // Fallback: send as plain text if HTML fails
         try {
-          const res = await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)['sendMessage']({
+          const res = await this.raw['sendMessage']({
             chat_id: chatId,
             ...extra,
             text: chunk.text,
@@ -302,12 +307,12 @@ export class TelegramClient implements Client {
     const chunk = chunks[0]; // edit can only update one message — use first chunk
     if (!chunk) return;
     try {
-      await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)['editMessageText']({
+      await this.raw['editMessageText']({
         chat_id: chatId, message_id: msgId, text: chunk.html, parse_mode: 'HTML',
       });
     } catch {
       try {
-        await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)['editMessageText']({
+        await this.raw['editMessageText']({
           chat_id: chatId, message_id: msgId, text: chunk.text, parse_mode: undefined,
         });
       } catch { /* ignore edit failures during streaming */ }
@@ -519,10 +524,10 @@ export class TelegramClient implements Client {
     text: string,
   ): Promise<{ message_id?: number } | null> {
     try {
-      return await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)[method]({ ...params, text: markdownToHtml(text) }) as { message_id?: number } | null;
+      return await this.raw[method]({ ...params, text: markdownToHtml(text) }) as { message_id?: number } | null;
     } catch {
       try {
-        return await (this.bot.api.raw as Record<string, (...args: unknown[]) => unknown>)[method]({
+        return await this.raw[method]({
           ...params,
           text: markdownToText(text),
           parse_mode: undefined,
