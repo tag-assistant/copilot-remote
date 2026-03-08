@@ -72,6 +72,27 @@ async function main(): Promise<void> {
   const sessions = new Map<string, CopilotSession>();
   const chatWorkDirs = new Map<string, string>();
 
+  // Per-chat config with defaults
+  interface ChatConfig {
+    showUsage: boolean;
+    showThinking: boolean;
+    showTools: boolean;
+    allowAllTools: boolean;
+  }
+  const defaultConfig: ChatConfig = {
+    showUsage: false,
+    showThinking: true,
+    showTools: true,
+    allowAllTools: false,
+  };
+  const chatConfigs = new Map<string, ChatConfig>();
+  const getConfig = (chatId: string): ChatConfig => {
+    return chatConfigs.get(chatId) ?? { ...defaultConfig };
+  };
+  const setConfig = (chatId: string, cfg: ChatConfig) => {
+    chatConfigs.set(chatId, cfg);
+  };
+
   telegram.setMessageHandler(async (text: string, chatId: string, messageId: number) => {
     console.log('[Message] ' + chatId + ': ' + text);
 
@@ -88,6 +109,7 @@ async function main(): Promise<void> {
 
       try {
         await session.start({ cwd: workDir, binary: copilotBin });
+        session.allowAllTools = getConfig(chatId).allowAllTools;
         sessions.set(chatId, session);
       } catch (err) {
         await telegram.sendMessage(chatId, '❌ Failed to start: ' + String(err));
@@ -103,6 +125,7 @@ async function main(): Promise<void> {
     // Status reactions on user's message
     const react = (emoji: string) => telegram.setReaction(chatId, messageId, emoji);
     await react('🤔');
+    const cfg = getConfig(chatId);
 
     // Stream state — one message, continuously edited
     let streamMsgId: number | null = null;
@@ -164,6 +187,7 @@ async function main(): Promise<void> {
     };
 
     const onThinking = (text: string) => {
+      if (!cfg.showThinking) return;
       thinkingText += text;
       scheduleEdit();
     };
@@ -191,6 +215,8 @@ async function main(): Promise<void> {
       else if (codingTools.includes(name)) react('👨‍💻');
       else react('🔥');
 
+      if (!cfg.showTools) return;
+
       // Build tool line
       const label = prettyTool[name] ?? '🔧 ' + name.replace(/_/g, ' ');
       const args = tool.arguments;
@@ -209,6 +235,7 @@ async function main(): Promise<void> {
     };
 
     const onToolComplete = (tool: any) => {
+      if (!cfg.showTools) return;
       // Mark tool as done with checkmark
       const idx = toolLines.length - 1;
       if (idx >= 0 && tool.success !== false) {
@@ -245,9 +272,9 @@ async function main(): Promise<void> {
       // Build final message: clean response + usage footer
       let finalText = response.content || '_(no response)_';
 
-      // Add usage footer
+      // Add usage footer if enabled
       const usage = resultData?.usage;
-      if (usage) {
+      if (cfg.showUsage && usage) {
         const parts: string[] = [];
         if (usage.premiumRequests) parts.push(usage.premiumRequests + ' reqs');
         if (usage.totalApiDurationMs) parts.push((usage.totalApiDurationMs / 1000).toFixed(1) + 's');
@@ -387,16 +414,18 @@ async function main(): Promise<void> {
       }
 
       case '/allowall': {
-        let session = sessions.get(chatId);
-        if (!session || !session.alive) {
-          session = new CopilotSession();
-          const workDir = chatWorkDirs.get(chatId) ?? config.workDir;
-          await session.start({ cwd: workDir, binary: copilotBin });
-          sessions.set(chatId, session);
-        }
-        session.allowAllTools = !session.allowAllTools;
+        const cfg = getConfig(chatId);
+        cfg.allowAllTools = !cfg.allowAllTools;
+        setConfig(chatId, cfg);
+        const session = sessions.get(chatId);
+        if (session?.alive) session.allowAllTools = cfg.allowAllTools;
         await telegram.sendMessage(chatId,
-          session.allowAllTools ? '✅ Auto-approve all tools ON' : '⚪ Auto-approve all tools OFF');
+          cfg.allowAllTools ? '✅ Auto-approve all tools ON' : '⚪ Auto-approve all tools OFF');
+        break;
+      }
+
+      case '/config': {
+        await sendConfigMenu(chatId);
         break;
       }
 
@@ -420,6 +449,49 @@ async function main(): Promise<void> {
         break;
     }
   }
+
+  async function sendConfigMenu(chatId: string, editMsgId?: number): Promise<void> {
+    const cfg = getConfig(chatId);
+    const toggle = (v: boolean) => v ? '✅' : '⬜';
+    const text = '⚙️ *Settings*';
+    const buttons = [
+      [
+        { text: toggle(cfg.showThinking) + ' Thinking', data: 'cfg:showThinking' },
+        { text: toggle(cfg.showTools) + ' Tools', data: 'cfg:showTools' },
+      ],
+      [
+        { text: toggle(cfg.showUsage) + ' Usage Stats', data: 'cfg:showUsage' },
+        { text: toggle(cfg.allowAllTools) + ' Auto-approve', data: 'cfg:allowAllTools' },
+      ],
+    ];
+
+    if (editMsgId) {
+      await telegram.editMessageButtons(chatId, editMsgId, text, buttons);
+    } else {
+      await telegram.sendMessageWithButtons(chatId, text, buttons);
+    }
+  }
+
+  // Handle inline button presses
+  telegram.setCallbackHandler(async (callbackId: string, data: string, chatId: string, msgId: number) => {
+    if (data.startsWith('cfg:')) {
+      const key = data.slice(4) as keyof ChatConfig;
+      const cfg = getConfig(chatId);
+      if (key in cfg) {
+        (cfg as any)[key] = !(cfg as any)[key];
+        setConfig(chatId, cfg);
+
+        // Sync allowAllTools to active session
+        if (key === 'allowAllTools') {
+          const session = sessions.get(chatId);
+          if (session?.alive) session.allowAllTools = cfg.allowAllTools;
+        }
+
+        // Update the config menu in-place
+        await sendConfigMenu(chatId, msgId);
+      }
+    }
+  });
 
   process.on('SIGINT', () => {
     console.log('\nShutting down...');

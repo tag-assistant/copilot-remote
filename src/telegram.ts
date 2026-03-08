@@ -19,6 +19,7 @@ export class TelegramBridge {
   private offset = 0;
   private polling = false;
   private onMessage: ((text: string, chatId: string, messageId: number) => void) | null = null;
+  private onCallback: ((callbackId: string, data: string, chatId: string, messageId: number) => void) | null = null;
   private pairedUser: string | null = null;
 
   constructor(private config: TelegramConfig) {
@@ -30,6 +31,10 @@ export class TelegramBridge {
 
   setMessageHandler(handler: (text: string, chatId: string, messageId: number) => void): void {
     this.onMessage = handler;
+  }
+
+  setCallbackHandler(handler: (callbackId: string, data: string, chatId: string, messageId: number) => void): void {
+    this.onCallback = handler;
   }
 
   async startPolling(): Promise<void> {
@@ -64,6 +69,20 @@ export class TelegramBridge {
             }
 
             this.onMessage?.(msg.text, String(msg.chat.id), msg.message_id);
+          }
+
+          // Handle callback queries (inline button presses)
+          if (update.callback_query) {
+            const cb = update.callback_query;
+            const cbChatId = String(cb.message?.chat?.id ?? '');
+            const cbMsgId = cb.message?.message_id ?? 0;
+            const userId = String(cb.from?.id);
+
+            if (userId === this.pairedUser && cbChatId) {
+              this.onCallback?.(cb.id, cb.data ?? '', cbChatId, cbMsgId);
+            }
+            // Always answer to dismiss loading state
+            await this.api('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
           }
         }
       } catch (err) {
@@ -143,6 +162,53 @@ export class TelegramBridge {
     }).catch(() => {});
   }
 
+  async sendMessageWithButtons(chatId: string | number, text: string, buttons: { text: string; data: string }[][]): Promise<number | null> {
+    const res = await this.api('sendMessage', {
+      chat_id: chatId,
+      text,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: buttons.map(row =>
+          row.map(btn => ({ text: btn.text, callback_data: btn.data }))
+        ),
+      },
+    }).catch(async () => {
+      return await this.api('sendMessage', {
+        chat_id: chatId,
+        text,
+        reply_markup: {
+          inline_keyboard: buttons.map(row =>
+            row.map(btn => ({ text: btn.text, callback_data: btn.data }))
+          ),
+        },
+      });
+    });
+    return res?.result?.message_id ?? null;
+  }
+
+  async editMessageButtons(chatId: string | number, messageId: number, text: string, buttons?: { text: string; data: string }[][]): Promise<void> {
+    const markup = buttons ? {
+      inline_keyboard: buttons.map(row =>
+        row.map(btn => ({ text: btn.text, callback_data: btn.data }))
+      ),
+    } : { inline_keyboard: [] };
+
+    await this.api('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: 'Markdown',
+      reply_markup: markup,
+    }).catch(async () => {
+      await this.api('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        reply_markup: markup,
+      }).catch(() => {});
+    });
+  }
+
   private splitMessage(text: string): string[] {
     if (text.length <= MAX_MESSAGE_LENGTH) return [text];
 
@@ -177,7 +243,7 @@ export class TelegramBridge {
     const res = await this.api('getUpdates', {
       offset: this.offset,
       timeout: 30,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
     });
     return res.result ?? [];
   }
