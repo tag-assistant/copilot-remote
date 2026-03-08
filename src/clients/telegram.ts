@@ -62,6 +62,12 @@ export class TelegramClient implements Client {
   removeReaction(chatId: string, msgId: number) {
     return this.bridge.removeReaction(chatId, msgId);
   }
+  sendDraft(chatId: string, draftId: number, text: string, threadId?: number) {
+    return this.bridge.sendDraft(chatId, draftId, text, threadId);
+  }
+  allocateDraftId() {
+    return this.bridge.allocateDraftId();
+  }
 
   onMessage?: Client['onMessage'];
   onCallback?: Client['onCallback'];

@@ -29,6 +29,10 @@ export interface Client {
   setReaction(chatId: string, msgId: number, emoji: string): Promise<void>;
   removeReaction(chatId: string, msgId: number): Promise<void>;
 
+  // Draft streaming (optional — platforms that support native streaming)
+  sendDraft?(chatId: string, draftId: number, text: string, threadId?: number): Promise<boolean>;
+  allocateDraftId?(): number;
+
   // Event handlers (set by bridge)
   onMessage?: (text: string, chatId: string, msgId: number, replyText?: string, replyToMsgId?: number) => Promise<void>;
   onCallback?: (callbackId: string, data: string, chatId: string, msgId: number) => Promise<void>;

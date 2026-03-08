@@ -113,12 +113,14 @@ async function main(): Promise<void> {
     await client.sendTyping(chatId);
 
     let streamMsgId: number | null = null;
+    let draftId: number | null = null;
+    let useDraft = !!client.sendDraft; // try draft mode if client supports it
     let thinkingText = '',
       responseText = '';
     const toolLines: string[] = [];
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
-    const THROTTLE = 1200;
+    const THROTTLE = useDraft ? 400 : 1200; // drafts can update faster
 
     const display = () => {
       const p: string[] = [];
@@ -136,6 +138,16 @@ async function main(): Promise<void> {
       lastEdit = Date.now();
       const text = display();
       if (!text.trim()) return;
+
+      // Try native draft streaming first
+      if (useDraft && client.sendDraft) {
+        if (!draftId) draftId = client.allocateDraftId!();
+        const ok = await client.sendDraft(chatId, draftId, text);
+        if (ok) return; // draft sent successfully
+        useDraft = false; // fall back to edit-in-place
+      }
+
+      // Fallback: send then edit
       if (!streamMsgId) {
         if (text.length < 15) return;
         streamMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
@@ -254,7 +266,11 @@ async function main(): Promise<void> {
         }
       }
 
-      if (streamMsgId && final.length <= 4096) {
+      // Finalize: send the complete response
+      if (draftId) {
+        // Draft mode: send real message to replace the draft preview
+        await client.sendMessage(chatId, final, { disableLinkPreview: true });
+      } else if (streamMsgId && final.length <= 4096) {
         await client.editMessage(chatId, streamMsgId, final);
       } else if (streamMsgId) {
         await client.editMessage(chatId, streamMsgId, final.slice(0, 4096));
@@ -601,9 +617,33 @@ async function main(): Promise<void> {
   // ── Config menu ──
   async function sendConfigMenu(chatId: string, editId?: number) {
     const c = cfg(chatId);
+    const s = sessions.get(chatId);
     const t = (v: boolean) => (v ? '✅' : '⬜');
-    const text = '⚙️ *Settings*\nModel: `' + c.model + '`' + (c.agent ? '\nAgent: `' + c.agent + '`' : '');
+
+    // Get current mode
+    let mode = 'interactive';
+    if (s?.alive) {
+      try {
+        mode = await s.getMode();
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const modeLabel = (m: string) =>
+      (m === mode ? '● ' : '') + { interactive: '⚡ Interactive', plan: '📋 Plan', autopilot: '🚀 Autopilot' }[m];
+    const text =
+      '⚙️ *Settings*\nModel: `' +
+      c.model +
+      '`\nMode: ' +
+      modeLabel(mode) +
+      (c.agent ? '\nAgent: `' + c.agent + '`' : '');
     const buttons = [
+      [
+        { text: modeLabel('interactive')!, data: 'mode:interactive' },
+        { text: modeLabel('plan')!, data: 'mode:plan' },
+        { text: modeLabel('autopilot')!, data: 'mode:autopilot' },
+      ],
       [
         { text: t(c.showThinking) + ' Thinking', data: 'cfg:showThinking' },
         { text: t(c.showTools) + ' Tools', data: 'cfg:showTools' },
@@ -612,7 +652,6 @@ async function main(): Promise<void> {
         { text: t(c.showUsage) + ' Usage', data: 'cfg:showUsage' },
         { text: t(c.showReactions) + ' Reactions', data: 'cfg:showReactions' },
       ],
-      [{ text: t(c.autopilot) + ' Autopilot', data: 'cfg:autopilot' }],
       [{ text: '🤖 Change Model', data: 'cfg:modelPicker' }],
     ];
     if (editId) {
@@ -700,6 +739,22 @@ async function main(): Promise<void> {
         } catch {
           /* ignore */
         }
+      return sendConfigMenu(chatId, msgId);
+    }
+    if (data.startsWith('mode:')) {
+      const newMode = data.slice(5) as 'interactive' | 'plan' | 'autopilot';
+      const s = sessions.get(chatId);
+      const c = cfg(chatId);
+      if (s?.alive) {
+        try {
+          await s.setMode(newMode);
+          c.autopilot = newMode === 'autopilot';
+          s.autopilot = c.autopilot;
+          setCfg(chatId, c);
+        } catch {
+          /* ignore */
+        }
+      }
       return sendConfigMenu(chatId, msgId);
     }
     if (data.startsWith('cfg:')) {
