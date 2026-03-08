@@ -38,6 +38,10 @@ export const TOOL_LABELS: Record<string, string> = {
   edit_file: '✏️ Edit',
   create_file: '📝 Create',
   bash: '▶️ Run',
+  run_bash: '▶️ Run',
+  read_bash: '👁 Waiting',
+  write_bash: '⌨️ Input',
+  stop_bash: '⏹ Stop',
   view: '👁 View',
   list_dir: '📂 List',
   search: '🔍 Search',
@@ -48,6 +52,8 @@ export const TOOL_LABELS: Record<string, string> = {
   write_file: '📝 Write',
   web_fetch: '🌐 Fetch',
   web_search: '🔎 Search',
+  send_notification: '📨 Notify',
+  ask_user: '❓ Ask',
 };
 
 export const LIFECYCLE_REACTIONS: Record<string, string> = {
