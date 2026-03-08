@@ -2,11 +2,14 @@
 // Raw Telegram Bot API via fetch(). No grammy/telegraf.
 import { markdownToHtml, markdownToText } from './format.js';
 import { toTelegramReaction } from './emoji.js';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const POLL_INTERVAL = 1000;
 const MAX_MESSAGE_LENGTH = 4096;
 const DRAFT_ID_MAX = 2_147_483_647;
+const OFFSET_FILE = join(process.env.HOME ?? '/tmp', '.copilot-remote', 'poll-offset');
 let nextDraftId = 0;
 
 export interface TelegramConfig {
@@ -47,6 +50,12 @@ export class TelegramBridge {
     if (config.allowedUsers.length > 0) {
       this.pairedUser = config.allowedUsers[0];
     }
+    // Restore poll offset from disk
+    try {
+      this.offset = parseInt(readFileSync(OFFSET_FILE, 'utf-8').trim(), 10) || 0;
+    } catch {
+      /* ignore */
+    }
   }
 
   setMessageHandler(handler: typeof this.onMessage): void {
@@ -75,6 +84,7 @@ export class TelegramBridge {
         const updates = await this.getUpdates();
         for (const update of updates) {
           this.offset = update.update_id + 1;
+          this.saveOffset();
 
           if (update.message?.text) {
             const msg = update.message;
@@ -305,6 +315,18 @@ export class TelegramBridge {
     );
   }
 
+  async deleteMessage(chatId: string | number, messageId: number): Promise<void> {
+    await this.api('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {
+      /* ignore */
+    });
+  }
+
+  async sendTypingToThread(chatId: string | number, threadId: number): Promise<void> {
+    await this.api('sendChatAction', { chat_id: chatId, action: 'typing', message_thread_id: threadId }).catch(() => {
+      /* ignore */
+    });
+  }
+
   // ── Bot commands ──
 
   async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
@@ -349,15 +371,40 @@ export class TelegramBridge {
     return res.result ?? [];
   }
 
-  private async api(method: string, body: any): Promise<any> {
-    const res = await fetch(this.baseUrl + '/' + method, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const json = (await res.json()) as any;
-    if (!json.ok) throw new Error('Telegram API error: ' + JSON.stringify(json));
-    return json;
+  private saveOffset(): void {
+    try {
+      mkdirSync(dirname(OFFSET_FILE), { recursive: true });
+      writeFileSync(OFFSET_FILE, String(this.offset));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private async api(method: string, body: any, retries = 3): Promise<any> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(this.baseUrl + '/' + method, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const json = (await res.json()) as any;
+        if (!json.ok) {
+          // Rate limit — retry with backoff
+          if (json.error_code === 429) {
+            const wait = (json.parameters?.retry_after ?? 5) * 1000;
+            await sleep(wait);
+            continue;
+          }
+          throw new Error('Telegram API error: ' + JSON.stringify(json));
+        }
+        return json;
+      } catch (err) {
+        if (attempt === retries) throw err;
+        // Network error — exponential backoff
+        await sleep(1000 * Math.pow(2, attempt));
+      }
+    }
   }
 }
 
