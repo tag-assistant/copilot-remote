@@ -441,6 +441,8 @@ async function main(): Promise<void> {
 
   // ── Prompt handler (streaming + reactions) ──
   async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
+    // Show typing immediately — session creation can take seconds
+    client.sendTyping(chatId);
     let session: Session;
     try {
       session = await getSession(chatId);
@@ -479,8 +481,9 @@ async function main(): Promise<void> {
     client.sendTyping(chatId);
     const react = c.showReactions ? (e: string) => { client.setReaction(chatId, msgId, e).then(() => client.sendTyping(chatId)).catch(() => {}); } : () => {};
     react(LIFECYCLE_REACTIONS.received);
-    // Keep typing indicator alive every 4s while processing
-    const typingInterval = setInterval(() => client.sendTyping(chatId), 4000);
+    // Keep typing indicator alive — Telegram cancels it on every send/edit
+    // 3s interval (indicator lasts 5s) + send on every SDK event for responsiveness
+    const typingInterval = setInterval(() => client.sendTyping(chatId), 3000);
 
     let streamMsgId: number | null = null;
     let draftId: number | null = null;
