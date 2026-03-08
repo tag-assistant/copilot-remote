@@ -2,7 +2,6 @@
 // Tests Session class directly, no Telegram dependency.
 // Usage: npx tsx src/test-cli.ts [--debug] [--autopilot] [--cwd /path]
 import { Session } from './session.js';
-import { log } from './log.js';
 import * as readline from 'readline';
 
 const args = process.argv.slice(2);
@@ -11,7 +10,8 @@ const autopilot = args.includes('--autopilot');
 const cwdIdx = args.indexOf('--cwd');
 const cwd = cwdIdx >= 0 ? args[cwdIdx + 1] : process.cwd();
 
-if (debug) log.enabled = true;
+// Debug logging controlled by COPILOT_REMOTE_DEBUG=1 env var
+if (debug) process.env.COPILOT_REMOTE_DEBUG = '1';
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -63,7 +63,9 @@ async function main() {
       process.exit(0);
     }
     if (text === '/debug') {
-      log.enabled = !log.enabled;
+      const on = process.env.COPILOT_REMOTE_DEBUG !== '1';
+      process.env.COPILOT_REMOTE_DEBUG = on ? '1' : '0';
+      console.log('[DEBUG] ' + (on ? 'ON' : 'OFF'));
       continue;
     }
     if (text === '/status') {

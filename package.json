@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ && prettier --check 'src/**/*.ts'",
     "lint:fix": "eslint src/ --fix && prettier --write 'src/**/*.ts'",
+    "format": "prettier --write 'src/**/*.ts'",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/cli.js",
     "test": "node --test dist/**/*.test.js",

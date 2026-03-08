@@ -5,6 +5,8 @@ import { log } from './log.js';
 const CONFIG_DIR = join(process.env.HOME ?? '.', '.copilot-remote');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
+export type PermKind = 'shell' | 'write' | 'mcp' | 'read' | 'url' | 'custom-tool';
+
 export interface ChatConfig {
   showUsage: boolean;
   showThinking: boolean;
@@ -15,7 +17,7 @@ export interface ChatConfig {
   model: string;
   agent: string | null;
   reasoningEffort: string;
-  autoApprove: Record<string, boolean>;
+  autoApprove: Record<PermKind, boolean>;
 }
 
 export const DEFAULT_CONFIG: ChatConfig = {

@@ -3,7 +3,7 @@ import { Session } from './session.js';
 import type { Client } from './client.js';
 import { TelegramClient } from './telegram.js';
 import { SessionStore } from './store.js';
-import { ConfigStore, type ChatConfig } from './config-store.js';
+import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
 import { log } from './log.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -54,6 +54,51 @@ const PROMPT_COMMANDS: Record<string, { usage?: string; prompt: (args: string) =
   '/mcp': { prompt: () => 'Show configured MCP servers and their status.' },
 };
 
+// ── Shared constants ──
+const TOOL_LABELS: Record<string, string> = {
+  read_file: '📖 Read',
+  edit_file: '✏️ Edit',
+  create_file: '📝 Create',
+  bash: '▶️ Run',
+  view: '👁 View',
+  list_dir: '📂 List',
+  search: '🔍 Search',
+  grep_search: '🔍 Search',
+  think: '💡 Think',
+  glob: '📂 Glob',
+  delete_file: '🗑 Delete',
+  write_file: '📝 Write',
+};
+
+const PERM_ICONS: Record<string, string> = {
+  shell: '⚡',
+  write: '✏️',
+  url: '🌐',
+  mcp: '🔌',
+  read: '📖',
+};
+
+const PERM_KIND_LABELS: Record<PermKind, string> = {
+  read: '📖 Read files',
+  write: '✏️ Write files',
+  shell: '⚡ Run commands',
+  url: '🌐 Fetch URLs',
+  mcp: '🔌 MCP tools',
+  'custom-tool': '🔧 Custom tools',
+};
+
+const MODE_LABELS: Record<string, string> = {
+  interactive: '⚡ Interactive',
+  plan: '📋 Plan',
+  autopilot: '🚀 Autopilot',
+};
+
+const MODE_ICONS: Record<string, string> = {
+  interactive: '⚡',
+  plan: '📋',
+  autopilot: '🚀',
+};
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const bin = config.copilotBinary ?? findBin('copilot');
@@ -63,7 +108,6 @@ async function main(): Promise<void> {
   const client: Client = new TelegramClient({ botToken: config.botToken, allowedUsers: config.allowedUsers });
 
   // ── Per-chat state ──
-  type PermKind = 'shell' | 'write' | 'mcp' | 'read' | 'url' | 'custom-tool';
   // ── Config ──
   const configStore = new ConfigStore();
 
@@ -254,21 +298,6 @@ async function main(): Promise<void> {
       if (!timer) timer = setTimeout(flush, Math.max(0, THROTTLE - (Date.now() - lastEdit)));
     };
 
-    const prettyTool: Record<string, string> = {
-      read_file: '📖 Read',
-      edit_file: '✏️ Edit',
-      create_file: '📝 Create',
-      bash: '▶️ Run',
-      view: '👁 View',
-      list_dir: '📂 List',
-      search: '🔍 Search',
-      grep_search: '🔍 Search',
-      think: '💡 Think',
-      glob: '📂 Glob',
-      delete_file: '🗑 Delete',
-      write_file: '📝 Write',
-    };
-
     const onThink = (t: string) => {
       if (c.showThinking) {
         thinkingText += t;
@@ -284,7 +313,7 @@ async function main(): Promise<void> {
       client.sendTyping(chatId);
       react('👨‍💻');
       if (!c.showTools) return;
-      const label = prettyTool[t.toolName] ?? '🔧 ' + t.toolName;
+      const label = TOOL_LABELS[t.toolName] ?? '🔧 ' + t.toolName;
       let detail = '';
       if (t.arguments?.command) detail = ' `' + t.arguments.command.slice(0, 60) + '`';
       else if (t.arguments?.file_path) detail = ' `' + t.arguments.file_path + '`';
@@ -306,8 +335,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      const icons: Record<string, string> = { shell: '⚡', write: '✏️', url: '🌐', mcp: '🔌', read: '📖' };
-      const icon = icons[kind] ?? '🔐';
+      const icon = PERM_ICONS[kind] ?? '🔐';
       const title =
         p.kind === 'shell'
           ? 'Run command'
@@ -565,8 +593,7 @@ async function main(): Promise<void> {
             s.getCurrentAgent().catch(() => null),
           ]);
           if ((model as any)?.modelId) lines.push('🤖 `' + (model as any).modelId + '`');
-          const modeIcons: Record<string, string> = { interactive: '⚡', plan: '📋', autopilot: '🚀' };
-          if (mode) lines.push((modeIcons[mode] ?? '⚙️') + ' ' + mode);
+          if (mode) lines.push((MODE_ICONS[mode] ?? '⚙️') + ' ' + mode);
           if ((agent as any)?.agent?.name) lines.push('🎭 `' + (agent as any).agent.name + '`');
         } catch {
           /* ignore */
@@ -841,8 +868,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const modeLabel = (m: string) =>
-      (m === mode ? '● ' : '') + { interactive: '⚡ Interactive', plan: '📋 Plan', autopilot: '🚀 Autopilot' }[m];
+    const modeLabel = (m: string) => (m === mode ? '● ' : '') + (MODE_LABELS[m] ?? m);
     const text =
       '⚙️ *Settings*\nModel: `' +
       c.model +
@@ -922,16 +948,8 @@ async function main(): Promise<void> {
   async function sendSecurityMenu(chatId: string, editId: number) {
     const c = cfg(chatId);
     const t = (v: boolean) => (v ? '✅' : '⬜');
-    const kindLabels: Record<PermKind, string> = {
-      read: '📖 Read files',
-      write: '✏️ Write files',
-      shell: '⚡ Run commands',
-      url: '🌐 Fetch URLs',
-      mcp: '🔌 MCP tools',
-      'custom-tool': '🔧 Custom tools',
-    };
     const buttons: { text: string; data: string }[][] = [];
-    for (const [kind, label] of Object.entries(kindLabels)) {
+    for (const [kind, label] of Object.entries(PERM_KIND_LABELS)) {
       buttons.push([{ text: t(c.autoApprove[kind as PermKind]) + ' ' + label, data: 'sec:' + kind }]);
     }
     const allOn = Object.values(c.autoApprove).every(Boolean);
@@ -998,11 +1016,9 @@ async function main(): Promise<void> {
       const res = await fetch(url);
       const buffer = Buffer.from(await res.arrayBuffer());
       const tmpDir = '/tmp/copilot-remote';
-      const { mkdirSync, writeFileSync } = await import('fs');
-      const { execSync } = await import('child_process');
-      mkdirSync(tmpDir, { recursive: true });
+      fs.mkdirSync(tmpDir, { recursive: true });
       const tmpPath = tmpDir + '/' + fileName;
-      writeFileSync(tmpPath, buffer);
+      fs.writeFileSync(tmpPath, buffer);
 
       // Voice message transcription
       if (fileName.endsWith('.oga') || fileName.endsWith('.ogg')) {
