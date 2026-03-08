@@ -211,6 +211,9 @@ async function main(): Promise<void> {
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
   let cachedModels: ModelInfo[] = [];
+  // Per-session usage tracking (keyed by session key)
+  const lastUsageMap = new Map<string, any>();
+  const contextInfoMap = new Map<string, string>();
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
@@ -509,7 +512,8 @@ async function main(): Promise<void> {
     session.on('user_input_request', onUserInput);
     session.on('context_info', (info: { tokenLimit: number; currentTokens: number; messagesLength: number }) => {
       const pct = Math.round((info.currentTokens / info.tokenLimit) * 100);
-      contextInfo = `📊 \`${pct}% context · ${info.messagesLength} msgs\``;
+      contextInfo = `📊 ${pct}% context · ${info.messagesLength} msgs`;
+      contextInfoMap.set(chatId, contextInfo);
     });
     session.on('usage', (u: Record<string, unknown>) => {
       lastUsage = {
@@ -519,6 +523,7 @@ async function main(): Promise<void> {
         cacheReadTokens: u.cacheReadTokens as number,
         duration: u.duration as number,
       };
+      lastUsageMap.set(chatId, lastUsage);
     });
     session.on('turn_start', (t: { turnId: string }) => {
       const n = parseInt(t.turnId, 10);
@@ -567,7 +572,7 @@ async function main(): Promise<void> {
         }
         if (u.cacheReadTokens) parts.push(`${u.cacheReadTokens} cached`);
         if (u.duration) parts.push(`${(u.duration / 1000).toFixed(1)}s`);
-        if (contextInfo) parts.push(contextInfo.replace(/[📊 `]/g, ''));
+        if (contextInfo) parts.push(contextInfo.replace(/📊 /g, ''));
         if (turnCount > 0) parts.push(`turn ${turnCount + 1}`);
         if (parts.length) final += '\n\n`' + parts.join(' · ') + '`';
       }
@@ -902,13 +907,25 @@ async function main(): Promise<void> {
         try {
           const q = await s.getQuota();
           const snaps = q?.quotaSnapshots;
-          if (Array.isArray(snaps)) {
-            const lines = snaps.map(
-              (s: QuotaSnapshot) =>
-                '• ' + s.usedRequests + '/' + s.entitlementRequests + ' (' + s.remainingPercentage + '% left)',
-            );
+          const lines: string[] = [];
+          if (snaps && typeof snaps === 'object') {
+            for (const [name, snap] of Object.entries(snaps) as [string, any][]) {
+              const used = snap.usedRequests ?? 0;
+              const total = snap.entitlementRequests ?? 0;
+              const pct = snap.remainingPercentage ?? 100;
+              const reset = snap.resetDate ? new Date(snap.resetDate).toLocaleDateString() : '';
+              lines.push(`*${name}*: ${used}/${total} used · ${pct}% remaining${reset ? ' · resets ' + reset : ''}`);
+            }
+          }
+          // Add context info if available
+          const ci = contextInfo;
+          if (ci) lines.push(ci.replace(/[`]/g, ''));
+
+          if (lines.length) {
             await client.sendMessage(chatId, '📊 *Usage*\n' + lines.join('\n'));
-          } else await client.sendMessage(chatId, '📊 ' + JSON.stringify(q).slice(0, 300));
+          } else {
+            await client.sendMessage(chatId, '📊 No usage data available.');
+          }
         } catch (e) {
           await client.sendMessage(chatId, '❌ ' + e);
         }
@@ -1045,6 +1062,7 @@ async function main(): Promise<void> {
       ],
       [{ text: '🔒 Tool Security', data: pfx('cfg:security') }],
       [{ text: '🎨 Display', data: pfx('cfg:display') }],
+      [{ text: '📊 Usage', data: pfx('cfg:usage') }],
     ];
     if (editId) {
       await client.editButtons(chatId, editId, text, buttons);
@@ -1384,6 +1402,41 @@ async function main(): Promise<void> {
     if (data === 'cfg:display') return sendDisplayMenu(chatId, msgId);
     if (data === 'cfg:security') return sendSecurityMenu(chatId, msgId);
     if (data === 'cfg:modelPicker') return sendModelPicker(chatId, msgId);
+    if (data === 'cfg:usage') {
+      const s = sessions.get(chatId);
+      const lines: string[] = [];
+      if (s?.alive) {
+        try {
+          const q = await s.getQuota();
+          const snaps = q?.quotaSnapshots;
+          if (snaps && typeof snaps === 'object') {
+            for (const [name, snap] of Object.entries(snaps) as [string, any][]) {
+              const used = snap.usedRequests ?? 0;
+              const total = snap.entitlementRequests ?? 0;
+              const pct = snap.remainingPercentage ?? 100;
+              lines.push(`*${name}*: ${used}/${total} · ${pct}% left`);
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      const ci = contextInfoMap.get(chatId);
+      if (ci) lines.push(ci);
+      const lu = lastUsageMap.get(chatId);
+      if (lu) {
+        const parts: string[] = [];
+        if (lu.model) parts.push('Model: `' + lu.model + '`');
+        if (lu.inputTokens || lu.outputTokens) parts.push(`Last: ${lu.inputTokens ?? 0}→${lu.outputTokens ?? 0} tokens`);
+        if (lu.cacheReadTokens) parts.push(`Cache: ${lu.cacheReadTokens} read`);
+        if (lu.duration) parts.push(`Time: ${(lu.duration / 1000).toFixed(1)}s`);
+        lines.push(parts.join(' · '));
+      }
+      await client.editButtons(
+        chatId, msgId,
+        '📊 *Usage*\n' + (lines.length ? lines.join('\n') : 'No data yet — send a message first.'),
+        [[{ text: '← Back', data: pfx('cfg:back') }]],
+      );
+      return;
+    }
     if (data === 'cfg:back') return sendConfigMenu(chatId, msgId);
     if (data === 'cfg:messageMode') {
       const c = cfg(chatId);
