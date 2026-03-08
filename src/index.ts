@@ -495,10 +495,11 @@ async function main(): Promise<void> {
     const display = () => {
       const p: string[] = [];
       if (intentText) p.push('🎯 *' + intentText + '*');
-      if (thinkingText && c.showThinking) {
-        p.push('_' + thinkingText + '_');
-      } else if (completedThinkingText && c.showThinking) {
-        p.push('_' + completedThinkingText + '_');
+      const thinking = thinkingText || (c.showThinking ? completedThinkingText : '');
+      if (thinking && c.showThinking) {
+        // Wrap each line individually in italic markers — multi-line _..._ breaks markdown
+        const italicized = thinking.split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
+        p.push(italicized);
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
       if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
@@ -602,6 +603,8 @@ async function main(): Promise<void> {
     const toolStartTimes = new Map<string, number>();
     const onToolStart = (t: ToolEvent) => {
       if (t.toolCallId) toolStartTimes.set(t.toolCallId, Date.now());
+      // ask_user has its own UI (buttons/reply prompt) — suppress from tool display
+      if (t.toolName === 'ask_user') return;
       client.sendTyping(chatId);
       // React based on tool type
       const toolReaction = t.toolName === 'web_fetch' || t.toolName === 'web_search' ? LIFECYCLE_REACTIONS.web
@@ -637,7 +640,7 @@ async function main(): Promise<void> {
     const onToolEnd = (t: ToolEvent) => {
       activeToolStatus = ''; // clear active tool status
       client.sendTyping(chatId); // re-send typing (Telegram cancels on edit)
-      if (t.toolName === 'report_intent') return; // already handled
+      if (t.toolName === 'report_intent' || t.toolName === 'ask_user') return;
       if (!c.showTools || !toolLines.length) return;
       const elapsed = t.toolCallId ? toolStartTimes.get(t.toolCallId) : undefined;
       const duration = elapsed ? ` ${((Date.now() - elapsed) / 1000).toFixed(1)}s` : '';
