@@ -5,7 +5,7 @@
 // session continuity, and tool approval flows.
 // ============================================================
 
-import { CopilotSession, CopilotToolExecute } from './session.js';
+import { CopilotSession } from './session.js';
 import { TelegramBridge } from './telegram.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -106,20 +106,37 @@ async function main(): Promise<void> {
     // Track streaming for progress updates
     let deltaCount = 0;
     const onDelta = () => { deltaCount++; };
-    const onToolExec = async (tool: CopilotToolExecute) => {
-      const msg = '🔧 *Tool:* `' + tool.toolName + '`';
-      await telegram.sendMessage(chatId, msg);
+    const onToolStart = async (tool: any) => {
+      const name = tool.toolName;
+      const args = tool.arguments;
+      let detail = '';
+      if (name === 'bash' && args?.command) {
+        detail = '\n`' + args.command + '`';
+      } else if (name === 'edit_file' && args?.file_path) {
+        detail = '\n`' + args.file_path + '`';
+      } else if (name === 'read_file' && args?.file_path) {
+        detail = '\n`' + args.file_path + '`';
+      } else if (args?.description) {
+        detail = '\n' + args.description;
+      }
+      await telegram.sendMessage(chatId, '🔧 *' + name + '*' + detail);
+    };
+    const onThinking = async (text: string) => {
+      // Optionally relay thinking — for now just log
+      console.log('[Thinking] ' + text.slice(0, 80));
     };
 
     session.on('delta', onDelta);
-    session.on('tool_execute', onToolExec);
+    session.on('tool_start', onToolStart);
+    session.on('thinking', onThinking);
 
     try {
       const response = await session.send(text);
 
       // Clean up listeners
       session.off('delta', onDelta);
-      session.off('tool_execute', onToolExec);
+      session.off('tool_start', onToolStart);
+      session.off('thinking', onThinking);
 
       if (response.content) {
         await telegram.sendMessage(chatId, response.content);
@@ -133,7 +150,8 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       session.off('delta', onDelta);
-      session.off('tool_execute', onToolExec);
+      session.off('tool_start', onToolStart);
+      session.off('thinking', onThinking);
       await telegram.sendMessage(chatId, '❌ ' + String(err));
     }
   });

@@ -85,8 +85,6 @@ export class CopilotSession extends EventEmitter {
       '--output-format json',
       '--no-alt-screen',
       '--no-color',
-      '-s',
-      '--allow-all-tools',
     ];
 
     // Resume existing session for conversation continuity
@@ -193,6 +191,17 @@ export class CopilotSession extends EventEmitter {
     onDelta: (text: string) => void,
   ): void {
     switch (event.type) {
+      case 'assistant.reasoning_delta': {
+        const delta = event.data?.deltaContent;
+        if (delta) this.emit('thinking', delta);
+        break;
+      }
+
+      case 'assistant.reasoning': {
+        this.emit('thinking_done', event.data?.content);
+        break;
+      }
+
       case 'assistant.message_delta': {
         const delta = event.data?.deltaContent;
         if (delta) onDelta(delta);
@@ -210,6 +219,28 @@ export class CopilotSession extends EventEmitter {
           });
           this.emit('message', data);
         }
+        break;
+      }
+
+      case 'tool.execution_start': {
+        const data = event.data;
+        console.log('[Session] Tool start: ' + data?.toolName);
+        this.emit('tool_start', {
+          toolCallId: data?.toolCallId,
+          toolName: data?.toolName,
+          arguments: data?.arguments,
+        });
+        break;
+      }
+
+      case 'tool.execution_complete': {
+        const data = event.data;
+        console.log('[Session] Tool done: ' + data?.toolCallId + ' success=' + data?.success);
+        this.emit('tool_complete', {
+          toolCallId: data?.toolCallId,
+          success: data?.success,
+          result: data?.result,
+        });
         break;
       }
 
