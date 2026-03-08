@@ -482,7 +482,7 @@ async function main(): Promise<void> {
     let activeToolStatus = ''; // current tool being executed (always shown)
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
-    const THROTTLE = useDraft ? 400 : 500; // drafts can update faster, edits throttled to avoid rate limits
+    const THROTTLE = useDraft ? 200 : 300; // apiThrottler + autoRetry handle rate limits; keep fast
 
     const display = () => {
       const p: string[] = [];
