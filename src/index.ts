@@ -132,8 +132,8 @@ async function main(): Promise<void> {
     }
 
     if (session.busy) {
-      await telegram.sendMessage(chatId, '⏳ Still processing...');
-      return;
+      // Messages queue automatically in ACP mode
+      await telegram.sendTyping(chatId);
     }
 
     // Status reactions on user's message
@@ -316,8 +316,8 @@ async function main(): Promise<void> {
       }
 
       await telegram.removeReaction(chatId, messageId);
-      if (session.sessionId) {
-        console.log('[Session] Conversation ID: ' + session.sessionId);
+      if (session.currentSessionId) {
+        console.log('[Session] Conversation ID: ' + session.currentSessionId);
       }
     } catch (err) {
       if (editTimer) { clearTimeout(editTimer); editTimer = null; }
@@ -404,7 +404,7 @@ async function main(): Promise<void> {
         const lines = [];
         if (session?.alive) {
           lines.push('✅ Active in `' + workDir + '`');
-          if (session.sessionId) lines.push('🆔 Session: `' + session.sessionId.slice(0, 8) + '...`');
+          if (session.currentSessionId) lines.push('🆔 Session: `' + session.currentSessionId.slice(0, 8) + '...`');
           if (session.busy) lines.push('⏳ Processing...');
         } else {
           lines.push('⚪ No active session. Send a message to auto-start.');

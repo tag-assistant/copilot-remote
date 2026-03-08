@@ -1,6 +1,6 @@
 {
   "name": "copilot-remote",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Control GitHub Copilot CLI from Telegram. Send prompts from your phone, get streamed responses with tool calls, session persistence, and model selection.",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node -e \"const fs=require('fs'),p=require('path'),d=p.join('node_modules','node-pty','prebuilds',process.platform+'-'+process.arch,'spawn-helper');fs.existsSync(d)&&fs.chmodSync(d,0o755)\"",
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
@@ -41,8 +40,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "node-pty": "^1.1.0",
-    "strip-ansi": "^7.1.0"
+    "@agentclientprotocol/sdk": "^0.15.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
