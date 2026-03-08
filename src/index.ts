@@ -400,13 +400,11 @@ async function main(): Promise<void> {
       return p.join('\n\n');
     };
 
-    let flushing = false;
+    let streamGeneration = 0;
     const flush = async () => {
-      if (flushing) return;
-      flushing = true;
+      const gen = streamGeneration;
       timer = null;
       lastEdit = Date.now();
-      try {
       const text = display();
       if (!text.trim()) return;
 
@@ -421,14 +419,16 @@ async function main(): Promise<void> {
       // Fallback: send then edit
       if (!streamMsgId) {
         if (text.length < 15) return;
-        streamMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
+        const newMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
+        if (gen !== streamGeneration) return; // stale, drop silently
+        streamMsgId = newMsgId;
         log.debug('Stream: new message', streamMsgId);
       } else {
         log.debug('Stream: edit message', streamMsgId);
         await client.editMessage(chatId, streamMsgId, text);
+        if (gen !== streamGeneration) return; // stale, drop silently
         client.sendTyping(chatId); // re-send typing after edit (edit cancels it)
       }
-      } finally { flushing = false; }
     };
 
     const schedEdit = () => {
@@ -442,6 +442,13 @@ async function main(): Promise<void> {
       }
     };
     const onDelta = (t: string) => {
+      if (thinkingText && streamMsgId) {
+        // Thinking was displayed as a real message, start fresh for response
+        const oldMsgId = streamMsgId;
+        streamMsgId = null;
+        streamGeneration++;
+        client.deleteMessage?.(chatId, oldMsgId).catch(() => {});
+      }
       thinkingText = '';
       responseText += t;
       schedEdit();
