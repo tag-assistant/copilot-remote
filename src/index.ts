@@ -309,6 +309,14 @@ async function main(): Promise<void> {
     });
     session.on('hook:session_start', () => log.debug('[hook] Session started for chat', chatId));
     session.on('hook:session_end', () => log.debug('[hook] Session ended for chat', chatId));
+    // Auto-rename forum topics when SDK provides a title
+    session.on('title_changed', ({ title }: { title: string }) => {
+      if (!title) return;
+      const [cid, tid] = resolveKey(chatId);
+      if (tid && 'editForumTopic' in client) {
+        (client as unknown as { editForumTopic: (c: string, t: number, n: string) => Promise<void> }).editForumTopic(cid, tid, title).catch(() => {});
+      }
+    });
   }
 
   async function getSession(chatId: string): Promise<Session> {
@@ -641,10 +649,7 @@ async function main(): Promise<void> {
       if (t.images?.length && client.sendPhoto) {
         for (const base64 of t.images) {
           const buffer = Buffer.from(base64, 'base64');
-          const tmpPath = '/tmp/copilot-remote/tool-image-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.png';
-          fs.mkdirSync('/tmp/copilot-remote', { recursive: true });
-          fs.writeFileSync(tmpPath, buffer);
-          client.sendPhoto(chatId, tmpPath).catch(() => {});
+          client.sendPhoto(chatId, buffer).catch(() => {});
         }
       }
     };

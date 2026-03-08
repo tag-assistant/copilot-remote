@@ -439,9 +439,10 @@ export class TelegramClient implements Client {
     }
   }
 
-  async sendPhoto(chatId: string, fileOrUrl: string, caption?: string, threadId?: number): Promise<number | null> {
+  async sendPhoto(chatId: string, fileOrUrl: string | Buffer, caption?: string, threadId?: number): Promise<number | null> {
     try {
-      const source = fileOrUrl.startsWith('/') ? new InputFile(fileOrUrl) : fileOrUrl;
+      const source = Buffer.isBuffer(fileOrUrl) ? new InputFile(fileOrUrl, 'image.png')
+        : fileOrUrl.startsWith('/') ? new InputFile(fileOrUrl) : fileOrUrl;
       const res = await this.bot.api.sendPhoto(chatId, source, {
         ...(caption ? { caption } : {}),
         ...(threadId ? { message_thread_id: threadId } : {}),
@@ -462,6 +463,12 @@ export class TelegramClient implements Client {
       log.error('createForumTopic failed:', e instanceof Error ? e.message : e);
       return null;
     }
+  }
+
+  async editForumTopic(chatId: string, threadId: number, name: string): Promise<void> {
+    try {
+      await this.bot.api.editForumTopic(chatId, threadId, { name });
+    } catch { /* best-effort */ }
   }
 
   async deleteForumTopic(chatId: string, threadId: number): Promise<void> {

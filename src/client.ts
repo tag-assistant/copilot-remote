@@ -38,7 +38,7 @@ export interface Client {
   // File operations (optional)
   getFileUrl?(fileId: string): Promise<string | null>;
   sendDocument?(chatId: string, url: string, filename: string, caption?: string): Promise<number | null>;
-  sendPhoto?(chatId: string, fileOrUrl: string, caption?: string, threadId?: number): Promise<number | null>;
+  sendPhoto?(chatId: string, fileOrUrl: string | Buffer, caption?: string, threadId?: number): Promise<number | null>;
 
   // Forum topics (optional)
   createForumTopic?(chatId: string, name: string): Promise<number | null>;

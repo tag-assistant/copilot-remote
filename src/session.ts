@@ -344,6 +344,9 @@ export class Session extends EventEmitter {
       case 'session.idle':
         this.emit('idle');
         break;
+      case 'session.title_changed':
+        this.emit('title_changed', { title: d.title ?? d.summary ?? '' });
+        break;
       case 'session.error':
         this.emit('error', d.message ?? 'Unknown error');
         break;
