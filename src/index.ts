@@ -103,48 +103,41 @@ async function main(): Promise<void> {
     // Send typing indicator
     await telegram.sendTyping(chatId);
 
-    // Progressive message: send placeholder, edit as content arrives
-    let statusMsgId: number | null = null;
+    // Collect thinking and stream it as one message when done
     let thinkingText = '';
-    let responseText = '';
-    let lastEditTime = 0;
-    const EDIT_INTERVAL = 1500; // Min ms between edits to avoid rate limits
-    let editTimer: NodeJS.Timeout | null = null;
-    let phase: 'thinking' | 'responding' | 'done' = 'thinking';
+    let thinkingMsgId: number | null = null;
+    let thinkingDone = false;
+    let lastThinkingEdit = 0;
+    let thinkingTimer: NodeJS.Timeout | null = null;
 
-    const scheduleEdit = () => {
-      if (editTimer) return;
-      const now = Date.now();
-      const elapsed = now - lastEditTime;
-      const delay = Math.max(0, EDIT_INTERVAL - elapsed);
-
-      editTimer = setTimeout(async () => {
-        editTimer = null;
-        lastEditTime = Date.now();
-        if (!statusMsgId) return;
-
-        let display = '';
-        if (phase === 'thinking' && thinkingText) {
-          display = '🧠 _' + thinkingText.slice(-200).replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&') + '..._';
-        } else if (responseText) {
-          display = responseText;
-        }
-
-        if (display) {
-          await telegram.editMessage(chatId, statusMsgId, display);
-        }
-      }, delay);
+    const flushThinking = async () => {
+      if (!thinkingText.trim()) return;
+      const display = '💭 ' + thinkingText.trim();
+      if (!thinkingMsgId) {
+        thinkingMsgId = await telegram.sendMessage(chatId, display);
+      } else {
+        await telegram.editMessage(chatId, thinkingMsgId, display);
+      }
+      lastThinkingEdit = Date.now();
     };
 
     const onThinking = (text: string) => {
       thinkingText += text;
-      if (phase === 'thinking') scheduleEdit();
+      if (thinkingDone) return;
+
+      // Throttle edits to every 2s
+      if (thinkingTimer) return;
+      const delay = Math.max(0, 2000 - (Date.now() - lastThinkingEdit));
+      thinkingTimer = setTimeout(async () => {
+        thinkingTimer = null;
+        await flushThinking();
+      }, delay);
     };
 
-    const onDelta = (text: string) => {
-      if (phase === 'thinking') phase = 'responding';
-      responseText += text;
-      scheduleEdit();
+    const onThinkingDone = async () => {
+      thinkingDone = true;
+      if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
+      await flushThinking();
     };
 
     const onToolStart = async (tool: any) => {
@@ -162,50 +155,34 @@ async function main(): Promise<void> {
     };
 
     session.on('thinking', onThinking);
-    session.on('delta', onDelta);
+    session.on('thinking_done', onThinkingDone);
     session.on('tool_start', onToolStart);
-
-    // Send initial status message
-    statusMsgId = await telegram.sendMessage(chatId, '🧠 _Thinking..._');
 
     try {
       const response = await session.send(text);
 
       // Clean up
-      phase = 'done';
-      if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+      if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
       session.off('thinking', onThinking);
-      session.off('delta', onDelta);
+      session.off('thinking_done', onThinkingDone);
       session.off('tool_start', onToolStart);
 
-      // Final edit with complete response
-      if (response.content && statusMsgId) {
-        if (response.content.length <= 4096) {
-          await telegram.editMessage(chatId, statusMsgId, response.content);
-        } else {
-          // Delete the status message and send full response (which will split)
-          await telegram.editMessage(chatId, statusMsgId, response.content.slice(0, 4096));
-          if (response.content.length > 4096) {
-            await telegram.sendMessage(chatId, response.content.slice(4096));
-          }
-        }
-      } else if (!response.content && statusMsgId) {
-        await telegram.editMessage(chatId, statusMsgId, '_(no response)_');
+      // Send the actual response as a separate message
+      if (response.content) {
+        await telegram.sendMessage(chatId, response.content);
+      } else {
+        await telegram.sendMessage(chatId, '_(no response)_');
       }
 
       if (session.sessionId) {
         console.log('[Session] Conversation ID: ' + session.sessionId);
       }
     } catch (err) {
-      if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+      if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
       session.off('thinking', onThinking);
-      session.off('delta', onDelta);
+      session.off('thinking_done', onThinkingDone);
       session.off('tool_start', onToolStart);
-      if (statusMsgId) {
-        await telegram.editMessage(chatId, statusMsgId, '❌ ' + String(err));
-      } else {
-        await telegram.sendMessage(chatId, '❌ ' + String(err));
-      }
+      await telegram.sendMessage(chatId, '❌ ' + String(err));
     }
   });
 
