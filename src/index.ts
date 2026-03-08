@@ -471,7 +471,7 @@ async function main(): Promise<void> {
     // Minimum chars before sending first streaming message.
     // Prevents premature push notifications (user sees "I" before the full sentence).
     // Pattern adapted from OpenClaw's DRAFT_MIN_INITIAL_CHARS (MIT, github.com/AustenStone/openclaw)
-    const MIN_INITIAL_CHARS = 50;
+    const MIN_INITIAL_CHARS = 1;
 
     const flush = async () => {
       const gen = streamGeneration;
