@@ -385,8 +385,6 @@ async function main(): Promise<void> {
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
       if (responseText) p.push(responseText);
-      // Context bar at bottom during streaming (before final)
-      if (contextInfo && !responseText) p.push(contextInfo);
       return p.join('\n\n');
     };
 
