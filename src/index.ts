@@ -368,6 +368,11 @@ async function main(): Promise<void> {
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
     const THROTTLE = useDraft ? 400 : 1200; // drafts can update faster
+    // Animation interval: force re-render every ~800ms to animate the ellipsis
+    const animInterval = setInterval(() => { schedEdit(); }, 800);
+
+    let tick = 0;
+    const ellipsis = () => { tick++; return ['·', '··', '···'][tick % 3]; };
 
     const display = () => {
       const p: string[] = [];
@@ -377,17 +382,17 @@ async function main(): Promise<void> {
       }
       if (toolLines.length) {
         const lines = [...toolLines];
-        // Append … to last tool line if it's still running (no ✓/✗ yet)
+        // Animate ellipsis on last tool line if still running
         const last = lines[lines.length - 1];
         if (last && !last.endsWith('✓') && !last.endsWith('✗')) {
-          lines[lines.length - 1] = last + ' …';
+          lines[lines.length - 1] = last + ' ' + ellipsis();
         }
         p.push(lines.join('\n'));
       }
       if (responseText) p.push(responseText);
-      // Append … while still streaming
+      // Animate while waiting for response
       if (p.length && !responseText) {
-        p[p.length - 1] += ' …';
+        p[p.length - 1] += ' ' + ellipsis();
       }
       return p.join('\n\n');
     };
@@ -531,7 +536,7 @@ async function main(): Promise<void> {
     try {
       const res = await session.send(prompt);
       cleanup();
-      clearInterval(typingInterval);
+      clearInterval(typingInterval); clearInterval(animInterval);
 
       let final = res.content;
       if (c.showUsage) {
@@ -562,7 +567,7 @@ async function main(): Promise<void> {
       await client.removeReaction(chatId, msgId);
     } catch (err) {
       cleanup();
-      clearInterval(typingInterval);
+      clearInterval(typingInterval); clearInterval(animInterval);
       await react('😱');
       await client.sendMessage(chatId, '❌ ' + String(err));
     }
