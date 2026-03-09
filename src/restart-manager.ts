@@ -1,4 +1,4 @@
-import { unwatchFile, watchFile, type Stats } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, unwatchFile, watchFile, type Stats, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GlobalConfig } from './config-store.js';
 import { CONFIG_FILE } from './config-store.js';
@@ -19,6 +19,12 @@ export interface SelfDevelopmentSettings {
 export interface RestartSignalInfo {
   reason: string;
   changedPath?: string;
+}
+
+export interface RestartNotice {
+  reason: string;
+  recipients: string[];
+  requestedAt: number;
 }
 
 interface RestartManagerDeps {
@@ -58,6 +64,91 @@ const AGENT_DIRS = [
 const PROMPT_DIRS = [
   ['.github', 'prompts'],
 ] as const;
+const RESTART_NOTICE_TTL_MS = 15 * 60 * 1000;
+
+export function getRestartNoticePath(homeDir = process.env.HOME ?? '.'): string {
+  return path.join(homeDir, '.copilot-remote', 'restart-notice.json');
+}
+
+function normalizeRestartRecipients(recipients: Iterable<string>): string[] {
+  return [...new Set([...recipients].filter((recipient) => typeof recipient === 'string' && recipient.trim()))];
+}
+
+export function persistRestartNotice(
+  opts: {
+    reason: string;
+    recipients: Iterable<string>;
+    homeDir?: string;
+  },
+  deps: {
+    mkdirSync?: typeof mkdirSync;
+    writeFileSync?: typeof writeFileSync;
+    now?: () => number;
+  } = {},
+): RestartNotice | null {
+  const recipients = normalizeRestartRecipients(opts.recipients);
+  if (!recipients.length) return null;
+
+  const notice: RestartNotice = {
+    reason: opts.reason,
+    recipients,
+    requestedAt: deps.now?.() ?? Date.now(),
+  };
+  const restartNoticePath = getRestartNoticePath(opts.homeDir);
+  const mkdirSyncImpl = deps.mkdirSync ?? mkdirSync;
+  const writeFileSyncImpl = deps.writeFileSync ?? writeFileSync;
+
+  mkdirSyncImpl(path.dirname(restartNoticePath), { recursive: true });
+  writeFileSyncImpl(restartNoticePath, JSON.stringify(notice, null, 2) + '\n');
+  return notice;
+}
+
+export function consumeRestartNotice(
+  opts: {
+    homeDir?: string;
+    maxAgeMs?: number;
+  } = {},
+  deps: {
+    readFileSync?: typeof readFileSync;
+    rmSync?: typeof rmSync;
+    now?: () => number;
+  } = {},
+): RestartNotice | null {
+  const restartNoticePath = getRestartNoticePath(opts.homeDir);
+  const readFileSyncImpl = deps.readFileSync ?? readFileSync;
+  const rmSyncImpl = deps.rmSync ?? rmSync;
+  let raw: string;
+
+  try {
+    raw = readFileSyncImpl(restartNoticePath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RestartNotice>;
+    const recipients = normalizeRestartRecipients(parsed.recipients ?? []);
+    const requestedAt = Number(parsed.requestedAt);
+    if (typeof parsed.reason !== 'string' || !recipients.length || !Number.isFinite(requestedAt)) return null;
+
+    const ageMs = (deps.now?.() ?? Date.now()) - requestedAt;
+    if (ageMs > (opts.maxAgeMs ?? RESTART_NOTICE_TTL_MS)) return null;
+
+    return {
+      reason: parsed.reason,
+      recipients,
+      requestedAt,
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      rmSyncImpl(restartNoticePath, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
 
 export function detectSupervisor(env: NodeJS.ProcessEnv = process.env): SupervisorKind {
   if (env.INVOCATION_ID || env.JOURNAL_STREAM || env.NOTIFY_SOCKET || env.SYSTEMD_EXEC_PID) return 'systemd';

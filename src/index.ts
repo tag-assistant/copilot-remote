@@ -20,7 +20,7 @@ import { log } from './log.js';
 import { formatPromptLogText } from './prompt-log.js';
 import { formatPromptTimeline, type PromptTimelineEntry } from './prompt-timeline.js';
 import { resolveProviderConfig } from './provider-config.js';
-import { RestartManager } from './restart-manager.js';
+import { RestartManager, consumeRestartNotice, persistRestartNotice } from './restart-manager.js';
 import { acquireSingleInstanceLock, createInstanceOwner } from './single-instance.js';
 import { finalizeStreamResponse } from './stream-lifecycle.js';
 import {
@@ -211,7 +211,19 @@ async function main(): Promise<void> {
   const lastUsageMap = new Map<string, { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; duration: number }>();
   const contextInfoMap = new Map<string, { tokenLimit: number; currentTokens: number; messagesLength: number }>();
 
-  const requestSelfRestart = (reason: string) => {
+  const collectRestartRecipients = (preferredChatId?: string): string[] => {
+    const recipients = new Set<string>();
+    if (preferredChatId) recipients.add(preferredChatId);
+    for (const chatKey of sessions.keys()) recipients.add(chatKey);
+    return [...recipients];
+  };
+
+  const requestSelfRestart = (reason: string, recipients: Iterable<string> = []) => {
+    try {
+      persistRestartNotice({ reason, recipients });
+    } catch (error) {
+      log.warn('[restart] Failed to persist restart notice:', error instanceof Error ? error.message : String(error));
+    }
     pendingRestartReason = reason;
     log.info('[restart] Requested:', reason);
     process.kill(process.pid, 'SIGUSR1');
@@ -229,10 +241,11 @@ async function main(): Promise<void> {
       }
     },
     onRequestRestart: ({ reason }) => {
-      for (const chatKey of sessions.keys()) {
+      const recipients = collectRestartRecipients();
+      for (const chatKey of recipients) {
         client.sendMessage(chatKey, `♻️ Restarting to load updated capabilities…\n\n${reason}`).catch(() => {});
       }
-      requestSelfRestart(reason);
+      requestSelfRestart(reason, recipients);
     },
   });
 
@@ -241,8 +254,9 @@ async function main(): Promise<void> {
 
   // Wrap client methods to auto-resolve session keys (chatId:threadId → chatId + threadId param)
   const resolveKey = (key: string): [string, number | undefined] => {
-    const tid = threadMap.get(key);
-    const cid = key.includes(':') ? key.split(':')[0] : key;
+    const [cid, rawThreadId] = key.split(':', 2);
+    const parsedThreadId = rawThreadId ? Number(rawThreadId) : undefined;
+    const tid = threadMap.get(key) ?? (Number.isFinite(parsedThreadId) ? parsedThreadId : undefined);
     return [cid, tid];
   };
 
@@ -1811,7 +1825,7 @@ async function main(): Promise<void> {
         const status = restartManager.getStatus();
         const reason = argStr || status.pending?.reason || 'Manual restart requested';
         await client.sendMessage(chatId, `♻️ Restart requested.\n\n${reason}`);
-        restartManager.requestManualRestart(reason);
+        requestSelfRestart(reason, collectRestartRecipients(chatId));
         break;
       }
       case '/selfdev': {
@@ -2088,6 +2102,15 @@ async function main(): Promise<void> {
     log.info('[restart] Graceful restart:', pendingRestartReason ?? 'SIGUSR1');
     void shutdown(true);
   });
+
+  const pendingRestartNotice = consumeRestartNotice();
+  if (pendingRestartNotice) {
+    for (const recipient of pendingRestartNotice.recipients) {
+      client
+        .sendMessage(recipient, `✅ Daemon restarted and back online.\n\n${pendingRestartNotice.reason}`)
+        .catch(() => {});
+    }
+  }
 
   await client.start();
 }
