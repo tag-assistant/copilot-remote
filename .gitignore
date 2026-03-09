@@ -5,6 +5,5 @@ dist/
 .env
 .DS_Store
 
-watchdog.log
-bot.log
+*.log
 .bot.pid
