@@ -9,12 +9,24 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
+    "!dist/**/__tests__",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js",
+    "!dist/test-cli.d.ts",
+    "!dist/test-cli.js",
+    "install.sh",
+    "scripts/patch-copilot-sdk.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "bench": "tsx src/benchmark.ts",
     "build": "tsc",
+    "package:check": "npm run build && npm pack --dry-run",
+    "publish:dry-run": "npm publish --dry-run",
+    "release:npm": "npm publish",
     "postinstall": "node scripts/patch-copilot-sdk.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ && prettier --check 'src/**/*.ts'",
@@ -36,13 +48,13 @@
     "coding-agent",
     "ai"
   ],
-  "author": "tag-assistant",
+  "author": "austenstone",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tag-assistant/copilot-remote.git"
+    "url": "git+https://github.com/austenstone/copilot-remote.git"
   },
-  "homepage": "https://github.com/tag-assistant/copilot-remote#readme",
+  "homepage": "https://github.com/austenstone/copilot-remote#readme",
   "engines": {
     "node": ">=22"
   },

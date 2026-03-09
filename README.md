@@ -4,24 +4,43 @@ Control GitHub Copilot from Telegram. Full SDK integration — streaming, tool c
 
 Conceptually, this is a lot like [Claude Code Remote Control's requirements](https://code.claude.com/docs/en/remote-control#requirements): the real session keeps running locally on your machine, and your phone is just a remote control surface for that local environment.
 
-[![CI](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml)
+[![CI](https://github.com/austenstone/copilot-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/austenstone/copilot-remote/actions/workflows/ci.yml)
 
 ## Setup
 
 ```bash
-npx copilot-remote
+curl -fsSL https://raw.githubusercontent.com/austenstone/copilot-remote/main/install.sh | bash
 ```
+
+That installs the persistent launchd/systemd daemon.
+
+After publishing to npm, the same daemon install flow will also be available via the CLI itself:
+
+```bash
+npx copilot-remote install
+# or
+npx copilot-remote daemon-install
+```
+
+If you want to run the bridge in the foreground instead of installing the daemon, use a local clone for now:
+
+```bash
+git clone https://github.com/austenstone/copilot-remote.git
+cd copilot-remote && npm install && npm run build && node dist/cli.js
+```
+
+Plain `npx copilot-remote` is intended to work once the package is published to npm, but it is not a valid production install path yet.
 
 ### Hackable Mode
 
-Want to hack on the source? Install in hackable mode — runs from TypeScript source with `tsx watch`, auto-reloads on file changes, and enables self-development features:
+Want to hack on the source? Install in hackable mode — runs from TypeScript source, auto-restarts on file/config capability changes, and enables self-development features:
 
 ```bash
 # One-liner
-curl -fsSL https://raw.githubusercontent.com/tag-assistant/copilot-remote/main/install.sh | bash -s -- --hackable
+curl -fsSL https://raw.githubusercontent.com/austenstone/copilot-remote/main/install.sh | bash -s -- --hackable
 
 # Or clone + run
-git clone https://github.com/tag-assistant/copilot-remote.git
+git clone https://github.com/austenstone/copilot-remote.git
 cd copilot-remote && npm install && npm run dev
 ```
 
@@ -29,9 +48,9 @@ In hackable mode the bot watches config, MCP, agents, and skills for changes and
 
 ---
 
-On first run, you'll be prompted for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather)). Config is saved to `~/.copilot-remote/config.json`.
+On first run, you'll be prompted for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather)). The installer saves runtime secrets to `~/.copilot-remote/config.json` with user-only permissions, so the launchd plist / systemd unit does not need to embed tokens.
 
-GitHub auth is auto-detected from `gh auth login`. If the logged-in account doesn't have a Copilot license, set `githubToken` in config or `GITHUB_TOKEN` env.
+GitHub auth is auto-detected from `gh auth login` when available. If the logged-in account doesn't have a Copilot license, set `githubToken` in config or `GITHUB_TOKEN` env.
 
 If you already run a headless Copilot CLI server, set `cliUrl` in config or `COPILOT_REMOTE_CLI_URL` and the bridge will connect to it instead of spawning its own CLI process.
 
@@ -112,7 +131,7 @@ Like Claude Remote Control, the important bit is that the local process must sta
 }
 ```
 
-Only `botToken` is required. If you are not using `cliUrl`, you also need GitHub auth via `gh auth login` or `GITHUB_TOKEN`.
+Only `botToken` is required. If you are not using `cliUrl`, you also need GitHub auth via `gh auth login` or `GITHUB_TOKEN`. The installer writes `config.json` as `0600`, and on macOS the daemon log lives at `~/.copilot-remote/logs/copilot-remote.log`.
 
 ### BYOK providers
 

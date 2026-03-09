@@ -2,17 +2,28 @@
 # ============================================================
 # Copilot Remote — One-line Installer
 # ============================================================
-# curl -fsSL https://raw.githubusercontent.com/tag-assistant/copilot-remote/main/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/austenstone/copilot-remote/main/install.sh | bash
 # Hackable mode (self-dev, source watching, hot reload):
 #   curl -fsSL ... | bash -s -- --hackable
 # ============================================================
 
 set -e
+umask 077
 
-REPO="tag-assistant/copilot-remote"
+REPO="austenstone/copilot-remote"
 INSTALL_DIR="$HOME/.copilot-remote"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.copilot-remote.plist"
 HACKABLE=0
+
+read_secret() {
+  local __target="$1"
+  if [ -t 0 ]; then
+    IFS= read -rs "$__target"
+    echo ""
+  else
+    IFS= read -r "$__target"
+  fi
+}
 
 # Parse flags
 for arg in "$@"; do
@@ -34,25 +45,52 @@ command -v node >/dev/null 2>&1 || { echo "❌ Node.js required. Install: https:
 command -v copilot >/dev/null 2>&1 || { echo "❌ GitHub Copilot CLI required. Install: npm install -g @github/copilot"; exit 1; }
 
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-if [ "$NODE_VERSION" -lt 20 ]; then
-  echo "❌ Node.js 20+ required (found $(node -v))"
+if [ "$NODE_VERSION" -lt 22 ]; then
+  echo "❌ Node.js 22+ required (found $(node -v))"
   exit 1
 fi
 
 # Get tokens
 if [ -z "$COPILOT_REMOTE_BOT_TOKEN" ]; then
   echo "  Telegram bot token (from @BotFather):"
-  read -rp "  > " COPILOT_REMOTE_BOT_TOKEN
+  printf "  > "
+  read_secret COPILOT_REMOTE_BOT_TOKEN
+fi
+
+GH_BIN=""
+GITHUB_TOKEN_SOURCE=""
+if command -v gh >/dev/null 2>&1; then
+  GH_BIN=$(which gh)
+fi
+
+if [ -n "$GITHUB_TOKEN" ]; then
+  GITHUB_TOKEN_SOURCE="env"
+fi
+
+if [ -z "$GITHUB_TOKEN" ] && [ -n "$GH_BIN" ]; then
+  GITHUB_TOKEN=$(gh auth token 2>/dev/null || true)
+  if [ -n "$GITHUB_TOKEN" ]; then
+    GITHUB_TOKEN_SOURCE="gh"
+  fi
 fi
 
 if [ -z "$GITHUB_TOKEN" ]; then
   echo ""
-  echo "  GitHub token (with Copilot access):"
-  read -rp "  > " GITHUB_TOKEN
+  echo "  GitHub token (with Copilot access, optional if gh auth login already works):"
+  printf "  > "
+  read_secret GITHUB_TOKEN
+  if [ -n "$GITHUB_TOKEN" ]; then
+    GITHUB_TOKEN_SOURCE="prompt"
+  fi
 fi
 
-if [ -z "$COPILOT_REMOTE_BOT_TOKEN" ] || [ -z "$GITHUB_TOKEN" ]; then
-  echo "❌ Both tokens are required."
+if [ -z "$COPILOT_REMOTE_BOT_TOKEN" ]; then
+  echo "❌ Telegram bot token is required."
+  exit 1
+fi
+
+if [ -z "$GITHUB_TOKEN" ]; then
+  echo "❌ Need GitHub auth via GITHUB_TOKEN or gh auth login."
   exit 1
 fi
 
@@ -73,23 +111,58 @@ npm run build --silent 2>/dev/null
 
 COPILOT_BIN=$(which copilot)
 NODE_BIN=$(which node)
+GH_DIR=""
+CONFIG_DIR="$INSTALL_DIR"
+CONFIG_PATH="$CONFIG_DIR/config.json"
+LOG_DIR="$INSTALL_DIR/logs"
+LOG_PATH="$LOG_DIR/copilot-remote.log"
+if [ -n "$GH_BIN" ]; then
+  GH_DIR=$(dirname "$GH_BIN")
+fi
 
-# Enable self-development in config for hackable mode
+mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+chmod 700 "$CONFIG_DIR" "$LOG_DIR"
+touch "$LOG_PATH"
+chmod 600 "$LOG_PATH"
+
+PERSIST_GITHUB_TOKEN=""
+if [ "$GITHUB_TOKEN_SOURCE" != "gh" ]; then
+  PERSIST_GITHUB_TOKEN="$GITHUB_TOKEN"
+fi
+
+CONFIG_PATH="$CONFIG_PATH" \
+COPILOT_REMOTE_BOT_TOKEN="$COPILOT_REMOTE_BOT_TOKEN" \
+COPILOT_REMOTE_GITHUB_TOKEN="$PERSIST_GITHUB_TOKEN" \
+COPILOT_REMOTE_HACKABLE="$HACKABLE" \
+node <<'EOF'
+const fs = require('fs');
+
+const configPath = process.env.CONFIG_PATH;
+const botToken = process.env.COPILOT_REMOTE_BOT_TOKEN;
+const githubToken = process.env.COPILOT_REMOTE_GITHUB_TOKEN;
+const hackable = process.env.COPILOT_REMOTE_HACKABLE === '1';
+
+let config = {};
+if (fs.existsSync(configPath)) {
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (error) {
+    console.warn(`⚠️  Failed to parse ${configPath}; rewriting it with a fresh config.`);
+  }
+}
+
+config.botToken = botToken;
+if (githubToken) config.githubToken = githubToken;
+
+if (hackable) {
+  config.selfDevelopment = { ...config.selfDevelopment, enabled: true, autoRestart: true };
+}
+
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+fs.chmodSync(configPath, 0o600);
+EOF
+
 if [ "$HACKABLE" -eq 1 ]; then
-  CONFIG_DIR="$HOME/.copilot-remote"
-  CONFIG_PATH="$CONFIG_DIR/config.json"
-  mkdir -p "$CONFIG_DIR"
-  if [ -f "$CONFIG_PATH" ]; then
-    # Merge selfDevelopment into existing config
-    node -e "
-      const fs = require('fs');
-      const cfg = JSON.parse(fs.readFileSync('$CONFIG_PATH', 'utf8'));
-      cfg.selfDevelopment = { ...cfg.selfDevelopment, enabled: true, autoRestart: true };
-      fs.writeFileSync('$CONFIG_PATH', JSON.stringify(cfg, null, 2) + '\n');
-    "
-  else
-    echo '{ "selfDevelopment": { "enabled": true, "autoRestart": true } }' > "$CONFIG_PATH"
-  fi
   echo "  🔧 Self-development enabled in config"
 fi
 
@@ -129,14 +202,10 @@ $PROG_ARGS
     <string>$INSTALL_DIR</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>COPILOT_REMOTE_BOT_TOKEN</key>
-        <string>$COPILOT_REMOTE_BOT_TOKEN</string>
         <key>COPILOT_REMOTE_WORKDIR</key>
         <string>$HOME</string>
-        <key>GITHUB_TOKEN</key>
-        <string>$GITHUB_TOKEN</string>
         <key>PATH</key>
-        <string>$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN")${GH_DIR:+:$GH_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
         <key>NODE_OPTIONS</key>
@@ -150,12 +219,14 @@ $EXTRA_ENV
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardOutPath</key>
-    <string>$HOME/.copilot-remote/copilot-remote.log</string>
+    <string>$LOG_PATH</string>
     <key>StandardErrorPath</key>
-    <string>$HOME/.copilot-remote/copilot-remote.log</string>
+    <string>$LOG_PATH</string>
 </dict>
 </plist>
 EOF
+
+  chmod 600 "$PLIST_PATH"
 
   launchctl load "$PLIST_PATH"
 
@@ -163,12 +234,13 @@ EOF
   echo "  ✅ Copilot Remote is running!"
   echo ""
   echo "  ─────────────────────────────"
+  echo "  Config:   ~/.copilot-remote/config.json (0600)"
   if [ "$HACKABLE" -eq 1 ]; then
     echo "  Mode:     🔧 Hackable (self-dev, file watching)"
     echo "  Source:   ~/.copilot-remote/src/"
   fi
   echo "  Service:  launchctl list | grep copilot"
-  echo "  Logs:     tail -f ~/.copilot-remote/copilot-remote.log"
+  echo "  Logs:     tail -f ~/.copilot-remote/logs/copilot-remote.log"
   echo "  Stop:     launchctl unload $PLIST_PATH"
   echo "  Start:    launchctl load $PLIST_PATH"
   if [ "$HACKABLE" -eq 1 ]; then
@@ -201,16 +273,18 @@ After=network.target
 [Service]
 ExecStart=$EXEC_START
 WorkingDirectory=$INSTALL_DIR
-Environment=COPILOT_REMOTE_BOT_TOKEN=$COPILOT_REMOTE_BOT_TOKEN
-Environment=GITHUB_TOKEN=$GITHUB_TOKEN
 Environment=COPILOT_REMOTE_WORKDIR=$HOME
-Environment=PATH=$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN")${GH_DIR:+:$GH_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+Environment=NODE_OPTIONS=--experimental-sqlite
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 EOF
+
+  chmod 600 "$UNIT_PATH"
 
   systemctl --user daemon-reload
   systemctl --user enable copilot-remote
@@ -220,6 +294,7 @@ EOF
   echo "  ✅ Copilot Remote is running!"
   echo ""
   echo "  ─────────────────────────────"
+  echo "  Config:    ~/.copilot-remote/config.json (0600)"
   echo "  Status:    systemctl --user status copilot-remote"
   echo "  Logs:      journalctl --user -u copilot-remote -f"
   echo "  Stop:      systemctl --user stop copilot-remote"
@@ -237,14 +312,12 @@ else
   echo ""
   echo "  ✅ Installed to ~/.copilot-remote"
   echo ""
+  echo "  Config saved to ~/.copilot-remote/config.json (0600)."
+  echo ""
   echo "  Run manually:"
   if [ "$HACKABLE" -eq 1 ]; then
-    echo "    COPILOT_REMOTE_BOT_TOKEN='$COPILOT_REMOTE_BOT_TOKEN' \\"
-    echo "    GITHUB_TOKEN='$GITHUB_TOKEN' \\"
-    echo "    npx tsx watch ~/.copilot-remote/src/index.ts"
+    echo "    ~/.copilot-remote/node_modules/.bin/tsx ~/.copilot-remote/src/index.ts"
   else
-    echo "    COPILOT_REMOTE_BOT_TOKEN='$COPILOT_REMOTE_BOT_TOKEN' \\"
-    echo "    GITHUB_TOKEN='$GITHUB_TOKEN' \\"
     echo "    node ~/.copilot-remote/dist/index.js"
   fi
   echo ""
