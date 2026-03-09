@@ -16,6 +16,7 @@ import { ConfigStore, type ChatConfig, type PermKind } from './config-store.js';
 import { discoverAgents } from './agent-discovery.js';
 import { loadMcpServers, formatServerLine, getConfigPaths } from './mcp-config.js';
 import { handleAgentCallback } from './agent-menu.js';
+import { handleSessionCallback } from './session-menu.js';
 import { handleCdCommand } from './cd-command.js';
 import { handleIncomingFileUpload } from './file-intake.js';
 import { log } from './log.js';
@@ -461,17 +462,14 @@ async function main(): Promise<void> {
     });
   }
 
-  async function getSession(chatId: string): Promise<Session> {
-    let s = sessions.get(chatId);
-    if (s?.alive) return s;
-
-    s = new Session();
-    const deterministicSessionId = SessionStore.deterministicSessionId(chatId);
+  function buildSessionOptions(chatId: string, cwdOverride?: string, sessionIdOverride?: string) {
     const c = cfg(chatId);
     const globalCfg = configStore.raw();
-    const opts = {
-      cwd: workDir(chatId),
-      sessionId: deterministicSessionId,
+    const cwd = cwdOverride ?? workDir(chatId);
+
+    return {
+      cwd,
+      sessionId: sessionIdOverride ?? SessionStore.deterministicSessionId(chatId),
       binary: bin,
       cliUrl: config.cliUrl,
       model: c.model,
@@ -482,16 +480,14 @@ async function main(): Promise<void> {
       githubToken: config.githubToken,
       infiniteSessions: c.infiniteSessions,
       messageMode: c.messageMode || undefined,
-      // Global config passthrough
       provider: globalCfg.provider ?? config.provider,
       mcpServers: (() => {
-        const { merged, sources } = loadMcpServers(globalCfg.mcpServers, workDir(chatId));
+        const { merged, sources } = loadMcpServers(globalCfg.mcpServers, cwd);
         if (sources.length) log.info(`Loaded MCP servers from ${sources.map(s => s.name).join(', ')}`);
         return Object.keys(merged).length ? merged : undefined;
       })(),
-      // Merge discovered agents from standard locations with config agents
       customAgents: (() => {
-        const discovered = discoverAgents(workDir(chatId));
+        const discovered = discoverAgents(cwd);
         const configAgents = (globalCfg.customAgents ?? []) as Array<{ name: string }>;
         const configNames = new Set(configAgents.map(a => a.name));
         const merged = [...configAgents, ...discovered.filter(a => !configNames.has(a.name))];
@@ -499,9 +495,7 @@ async function main(): Promise<void> {
         return merged.length ? merged : undefined;
       })(),
       skillDirectories: (() => {
-        // Merge config + auto-discovered skill directories
         const dirs = [...(globalCfg.skillDirectories ?? [])];
-        // Check common locations
         const home = process.env.HOME ?? '';
         const candidates = [
           path.join(home, '.copilot', 'skills'),
@@ -522,17 +516,26 @@ async function main(): Promise<void> {
         ? [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])]
         : undefined,
     };
+  }
+
+  async function getSession(chatId: string): Promise<Session> {
+    let s = sessions.get(chatId);
+    if (s?.alive) return s;
+
+    s = new Session();
+    const deterministicSessionId = SessionStore.deterministicSessionId(chatId);
+    const opts = buildSessionOptions(chatId);
 
     // Try to resume an existing session, preferring the deterministic Telegram-derived ID.
     for (const saved of sessionStore.getResumeCandidates(chatId)) {
       // Restore working directory from session DB
+      const resumeCwd = saved.cwd && saved.cwd !== config.workDir ? saved.cwd : opts.cwd;
       if (saved.cwd && saved.cwd !== config.workDir) {
         workDirs.set(chatId, saved.cwd);
-        opts.cwd = saved.cwd;
         restartManager.addWorkDir(saved.cwd);
       }
       try {
-        await s.resume(saved.sessionId, opts);
+        await s.resume(saved.sessionId, buildSessionOptions(chatId, resumeCwd, saved.sessionId));
         sessionStore.touch(chatId);
         sessions.set(chatId, s);
         registerSessionListeners(s, chatId);
@@ -553,7 +556,7 @@ async function main(): Promise<void> {
       sessionStore.set(chatId, {
         sessionId: s.sessionId,
         cwd: workDir(chatId),
-        model: c.model,
+        model: opts.model ?? '',
         createdAt: Date.now(),
         lastUsed: Date.now(),
       });
@@ -2175,6 +2178,20 @@ async function main(): Promise<void> {
     // Delegate config-related callbacks to config-menu module
     if (await handleConfigCallback(data, chatId, msgId, callbackId, configMenuDeps)) return;
     if (await handleAgentCallback(data, chatId, msgId, callbackId, { client, configStore, sessions, getSession })) return;
+    if (await handleSessionCallback(data, chatId, msgId, callbackId, {
+      client,
+      sessions,
+      sessionStore,
+      getWorkDir: workDir,
+      rememberWorkDir: (targetChatId: string, cwd: string) => {
+        workDirs.set(targetChatId, cwd);
+        sessionStore.setWorkDir(targetChatId, cwd);
+        restartManager.addWorkDir(cwd);
+      },
+      createSession: () => new Session(),
+      buildResumeOptions: (targetChatId: string, cwd: string, sessionId: string) => buildSessionOptions(targetChatId, cwd, sessionId),
+      registerSessionListeners: (session, targetChatId) => registerSessionListeners(session as Session, targetChatId),
+    })) return;
 
     // Handle user input responses (from ask_user tool)
     if (data.startsWith('input:')) {

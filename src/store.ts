@@ -16,7 +16,6 @@ interface DatabaseSyncLike {
 }
 
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = await import('node:sqlite');
   DatabaseSyncClass = mod.DatabaseSync;
 } catch {
@@ -85,6 +84,27 @@ export class SessionStore {
   /** Get the session entry for a chat */
   get(chatId: string): SessionEntry | undefined {
     return this.getResumeCandidates(chatId)[0];
+  }
+
+  /** Get a session entry by Copilot session ID, including arbitrary CLI-created sessions. */
+  getBySessionId(sessionId: string): SessionEntry | undefined {
+    const model = this.getMappedModel(sessionId);
+    const entry = this.getExistingEntry(sessionId, model);
+    if (entry) return entry;
+
+    const mappedChatId = this.findMappedChatId(sessionId) ?? SessionStore.sessionKeyFromSessionId(sessionId);
+    if (!mappedChatId) return undefined;
+
+    const cwd = this.workDirMap[mappedChatId] ?? '';
+    if (!cwd && !model) return undefined;
+
+    return {
+      sessionId,
+      cwd,
+      model,
+      createdAt: 0,
+      lastUsed: 0,
+    };
   }
 
   /** Get resumable sessions for a chat, preferring the deterministic session ID. */
@@ -217,6 +237,15 @@ export class SessionStore {
     try {
       return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as unknown as DbSession | undefined;
     } catch { return undefined; }
+  }
+
+  private findMappedChatId(sessionId: string): string | undefined {
+    return Object.entries(this.chatMap).find(([, entry]) => entry.sessionId === sessionId)?.[0];
+  }
+
+  private getMappedModel(sessionId: string): string {
+    const mappedChatId = this.findMappedChatId(sessionId) ?? SessionStore.sessionKeyFromSessionId(sessionId);
+    return mappedChatId ? this.chatMap[mappedChatId]?.model ?? '' : '';
   }
 
   private getExistingEntry(sessionId: string, model = ''): SessionEntry | undefined {
