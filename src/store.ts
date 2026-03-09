@@ -4,8 +4,24 @@
 // Keeps ~/.copilot-remote/chat-sessions.json only for legacy migrations/fallback mappings.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
-import { DatabaseSync } from 'node:sqlite';
 import { log } from './log.js';
+
+// node:sqlite is experimental (Node 22 needs --experimental-sqlite, Node 23+ has it auto).
+// Make it optional so the app degrades gracefully — /sessions and /search lose
+// summaries, turn counts, and FTS but everything else works fine.
+let DatabaseSyncClass: (new (path: string, opts?: { open?: boolean; readOnly?: boolean }) => DatabaseSyncLike) | null = null;
+
+interface DatabaseSyncLike {
+  prepare(sql: string): { all(...args: unknown[]): unknown[]; get(...args: unknown[]): unknown };
+}
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = await import('node:sqlite');
+  DatabaseSyncClass = mod.DatabaseSync;
+} catch {
+  log.info('[store] node:sqlite not available — session DB features disabled');
+}
 
 const DB_PATH = join(process.env.HOME ?? '/tmp', '.copilot', 'session-store.db');
 const CHAT_MAP_PATH = join(process.env.HOME ?? '/tmp', '.copilot-remote', 'chat-sessions.json');
@@ -32,7 +48,7 @@ interface DbSession {
 export class SessionStore {
   private chatMap: Record<string, { sessionId: string; model: string }> = {};
   private workDirMap: Record<string, string> = {};
-  private db: DatabaseSync | null = null;
+  private db: DatabaseSyncLike | null = null;
 
   static deterministicSessionId(chatId: string): string {
     const [chatPart, threadPart] = chatId.split(':');
@@ -55,9 +71,10 @@ export class SessionStore {
   }
 
   private openDb(): void {
+    if (!DatabaseSyncClass) return;
     try {
       if (existsSync(DB_PATH)) {
-        this.db = new DatabaseSync(DB_PATH, { open: true, readOnly: true });
+        this.db = new DatabaseSyncClass(DB_PATH, { open: true, readOnly: true });
         log.info('[store] Opened shared session DB:', DB_PATH);
       }
     } catch (e) {
