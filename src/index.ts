@@ -36,11 +36,17 @@ import * as readline from 'readline';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 
-function findBin(name: string): string {
+function findBin(name: string): string | undefined {
   try {
-    return execSync('which ' + name, { encoding: 'utf-8' }).trim();
+    const found = execSync('which ' + name, { encoding: 'utf-8' }).trim();
+    // Skip VS Code's Electron wrapper scripts — the SDK's bundled CLI is better
+    if (found) {
+      const content = fs.readFileSync(found, 'utf-8').slice(0, 200);
+      if (content.includes('ELECTRON_RUN_AS_NODE')) return undefined;
+    }
+    return found || undefined;
   } catch {
-    return name;
+    return undefined;
   }
 }
 

@@ -27,11 +27,7 @@ cd copilot-remote && npm install && npm run dev
 
 In hackable mode the bot watches config, MCP, agents, and skills for changes and auto-restarts via launchd/systemd. Edit `~/.copilot-remote/src/`, save, and it reloads.
 
-For a no-Telegram local mock harness, run:
-
-```bash
-npm run dev:mock
-```
+---
 
 On first run, you'll be prompted for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather)). Config is saved to `~/.copilot-remote/config.json`.
 
