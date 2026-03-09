@@ -139,6 +139,7 @@ export interface CopilotMessage {
 export interface SessionTurnReservation {
   turnId: Promise<string>;
   currentTurnId: string | null;
+  ownedTurnIds: Set<string>;
 }
 
 export interface SessionStreamEvent {
@@ -158,6 +159,14 @@ export interface AssistantPlanEvent {
   content?: string;
   reasoningText?: string;
   toolRequests: AssistantPlanToolRequest[];
+}
+
+export interface SubagentStartEvent {
+  turnId: string | null;
+  toolCallId?: string;
+  agentName?: string;
+  agentDisplayName?: string;
+  agentDescription?: string;
 }
 
 interface PendingTurnReservation {
@@ -303,6 +312,7 @@ export class Session extends EventEmitter {
   private _messageMode: 'enqueue' | 'immediate' | undefined = undefined;
   private cwd = '';
   private activeTurnId: string | null = null;
+  private activeSendReservation: SessionTurnReservation | null = null;
   private pendingTurnReservations: PendingTurnReservation[] = [];
   private sendChain: Promise<void> = Promise.resolve();
   private sdkEventSeq = 0;
@@ -341,6 +351,7 @@ export class Session extends EventEmitter {
     void turnId.catch(() => undefined);
     const reservation: SessionTurnReservation = {
       currentTurnId: null,
+      ownedTurnIds: new Set<string>(),
       turnId,
     };
     this.pendingTurnReservations.push({ reservation, resolve, reject });
@@ -358,6 +369,20 @@ export class Session extends EventEmitter {
     const error = new Error(reason);
     for (const entry of this.pendingTurnReservations.splice(0)) {
       entry.reject(error);
+    }
+  }
+
+  private claimActiveReservationTurn(turnId: string): void {
+    const reservation = this.activeSendReservation;
+    if (!reservation) return;
+
+    reservation.currentTurnId = turnId;
+    reservation.ownedTurnIds.add(turnId);
+
+    const pendingIndex = this.pendingTurnReservations.findIndex((entry) => entry.reservation === reservation);
+    if (pendingIndex !== -1) {
+      const [entry] = this.pendingTurnReservations.splice(pendingIndex, 1);
+      entry.resolve(turnId);
     }
   }
 
@@ -553,11 +578,7 @@ export class Session extends EventEmitter {
         this._turnActive = true;
         this.activeTurnId = turnId;
         if (turnId) {
-          const pending = this.pendingTurnReservations.shift();
-          if (pending) {
-            pending.reservation.currentTurnId = turnId;
-            pending.resolve(turnId);
-          }
+          this.claimActiveReservationTurn(turnId);
         }
         this.emit('turn_start', { turnId, interactionId: d.interactionId });
         break;
@@ -605,6 +626,15 @@ export class Session extends EventEmitter {
         });
         break;
       }
+      case 'subagent.started':
+        this.emit('subagent_start', {
+          turnId: this.activeTurnId,
+          toolCallId: typeof d.toolCallId === 'string' ? d.toolCallId : undefined,
+          agentName: typeof d.agentName === 'string' ? d.agentName : undefined,
+          agentDisplayName: typeof d.agentDisplayName === 'string' ? d.agentDisplayName : undefined,
+          agentDescription: typeof d.agentDescription === 'string' ? d.agentDescription : undefined,
+        } satisfies SubagentStartEvent);
+        break;
       case 'permission.requested':
         // Don't emit here — handlePermission() already emits permission_request
         // and waits for the response. Emitting from both causes duplicate prompts.
@@ -673,9 +703,10 @@ export class Session extends EventEmitter {
       let errorHandler: ((msg: string) => void) | null = null;
 
       try {
+        this.activeSendReservation = reservation;
         let text = '';
         onDelta = (event: SessionStreamEvent) => {
-          if (!reservation.currentTurnId || event.turnId !== reservation.currentTurnId) return;
+          if (!event.turnId || !reservation.ownedTurnIds.has(event.turnId)) return;
           text += event.text;
         };
         this.on('delta_event', onDelta);
@@ -728,6 +759,9 @@ export class Session extends EventEmitter {
         }
         throw error;
       } finally {
+        if (this.activeSendReservation === reservation) {
+          this.activeSendReservation = null;
+        }
         if (onDelta) this.off('delta_event', onDelta);
         if (errorHandler) this.off('error', errorHandler);
       }

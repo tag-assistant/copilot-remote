@@ -19,6 +19,10 @@ export interface ToolStatusSummary {
   statusLine: string;
 }
 
+export interface SubagentStatusSummary {
+  statusLine: string;
+}
+
 function getString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -42,6 +46,14 @@ function summarizeReasoning(value: string, max = 220): string {
     .map((segment) => segment.trim())
     .filter(Boolean);
   return clip(firstParagraph ?? value, max);
+}
+
+function humanizeAgentName(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
 }
 
 export function formatToolStatus(toolName: string, args?: ToolArguments): ToolStatusSummary {
@@ -121,8 +133,25 @@ export function extractAssistantPlan(input: {
   };
 }
 
+export function formatSubagentStatus(input: {
+  agentName?: string;
+  agentDisplayName?: string;
+  agentDescription?: string;
+}): SubagentStatusSummary {
+  const displayName = getString(input.agentDisplayName)
+    ?? (getString(input.agentName) ? humanizeAgentName(getString(input.agentName)!) : undefined)
+    ?? 'Agent';
+  return {
+    statusLine: `🤖 Starting ${clip(displayName, 72)}`,
+  };
+}
+
 export function summarizeToolCompletionDetail(detail: string | undefined, max = 120): string | undefined {
   const normalized = getString(detail);
   if (!normalized) return undefined;
+  if (/^Intent logged$/i.test(normalized)) return undefined;
+  if (/^Content type .*?cannot be simplified to markdown\./i.test(normalized) || /^Contents of https?:\/\//i.test(normalized)) {
+    return 'Fetched content';
+  }
   return clip(normalized, max);
 }

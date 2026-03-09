@@ -318,6 +318,56 @@ describe('Session', () => {
     });
   });
 
+  it('tracks all turns started during a single send on the active reservation', async () => {
+    const session = createTestSession();
+    const sdk = createFakeSdkSession(async () => {
+      session.handleEvent({ type: 'assistant.turn_start', data: { turnId: 'turn-1' } } as any);
+      session.handleEvent({ type: 'assistant.message_delta', data: { deltaContent: 'hello ' } } as any);
+      session.handleEvent({ type: 'assistant.turn_end', data: { turnId: 'turn-1' } } as any);
+      session.handleEvent({ type: 'assistant.turn_start', data: { turnId: 'turn-2' } } as any);
+      session.handleEvent({ type: 'assistant.message_delta', data: { deltaContent: 'world' } } as any);
+      session.handleEvent({ type: 'assistant.turn_end', data: { turnId: 'turn-2' } } as any);
+      return { data: { content: 'hello world' } };
+    });
+    session.session = sdk;
+    session.messageMode = 'enqueue';
+
+    const reservation = session.reserveTurn();
+    const result = await session.send('multi-turn', undefined, reservation);
+
+    assert.equal(result.content, 'hello world');
+    assert.deepEqual([...reservation.ownedTurnIds], ['turn-1', 'turn-2']);
+    assert.equal(reservation.currentTurnId, 'turn-2');
+  });
+
+  it('emits subagent start events with metadata', () => {
+    const session = new Session() as any;
+    let subagentEvent: Record<string, unknown> | undefined;
+
+    session.activeTurnId = 'turn-12';
+    session.on('subagent_start', (event: unknown) => {
+      subagentEvent = event as Record<string, unknown>;
+    });
+
+    session.handleEvent({
+      type: 'subagent.started',
+      data: {
+        toolCallId: 'tool-call-9',
+        agentName: 'code-review',
+        agentDisplayName: 'Code Review Agent',
+        agentDescription: 'Reviews code changes.',
+      },
+    } as any);
+
+    assert.deepEqual(subagentEvent, {
+      turnId: 'turn-12',
+      toolCallId: 'tool-call-9',
+      agentName: 'code-review',
+      agentDisplayName: 'Code Review Agent',
+      agentDescription: 'Reviews code changes.',
+    });
+  });
+
   it('prewarmSharedClient delegates to the shared client bootstrap path', async () => {
     const originalGetSharedClient = (Session as any).getSharedClient;
     const seen: Array<Record<string, unknown> | undefined> = [];

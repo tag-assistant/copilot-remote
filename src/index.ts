@@ -5,6 +5,7 @@ import type {
   FileAttachment,
   SessionStreamEvent,
   AssistantPlanEvent,
+  SubagentStartEvent,
 } from './session.js';
 import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
@@ -24,7 +25,8 @@ import { resolveProviderConfig } from './provider-config.js';
 import { RestartManager, consumeRestartNotice, persistRestartNotice } from './restart-manager.js';
 import { acquireSingleInstanceLock, createInstanceOwner } from './single-instance.js';
 import { finalizeStreamResponse } from './stream-lifecycle.js';
-import { extractAssistantPlan, formatToolStatus, summarizeToolCompletionDetail } from './status-summary.js';
+import { extractAssistantPlan, formatSubagentStatus, formatToolStatus, summarizeToolCompletionDetail } from './status-summary.js';
+import { ToolStatusState } from './tool-status-state.js';
 import {
   PROMPT_COMMANDS, LIFECYCLE_REACTIONS, PERM_ICONS,
   MODE_ICONS,
@@ -632,8 +634,11 @@ async function main(): Promise<void> {
     let intentText = '';
     const toolLines: string[] = [];
     let activeToolStatus = '';
+    const activeToolStatuses = new ToolStatusState();
+    const activeToolCallIds = new Set<string>();
     let lastEdit = 0,
       timer: NodeJS.Timeout | null = null;
+    let progressMaterializing = false;
     const THROTTLE = useDraft ? 120 : 180; // keep updates snappy without spamming Telegram
     let sendingFirst = false; // mutex: prevent duplicate first-message sends
     let placeholderPrimed = false;
@@ -692,6 +697,33 @@ async function main(): Promise<void> {
       placeholderPrimed = streamMsgId !== null;
       if (streamMsgId !== null) markTimeline('placeholder', 'message');
       log.debug('Stream: primed message', streamMsgId, 'for', chatId);
+    };
+
+    const materializeProgressSurface = async () => {
+      if (streamMsgId || progressMaterializing || sendingFirst || responseText) return;
+      const text = display();
+      if (!text.trim()) return;
+
+      progressMaterializing = true;
+      try {
+        useDraft = false;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        lastEdit = Date.now();
+        const tgStart = performance.now();
+        const sentMsgId = await client.sendMessage(chatId, text, responseMessageOpts);
+        noteTelegramCall(tgStart, sentMsgId !== null);
+        streamMsgId = sentMsgId;
+        placeholderPrimed = streamMsgId !== null;
+        if (streamMsgId !== null) {
+          markTimeline('progress_visible', 'message');
+          log.debug('Stream: materialized progress message', streamMsgId, 'for', chatId);
+        }
+      } finally {
+        progressMaterializing = false;
+      }
     };
 
     let session: Session;
@@ -770,6 +802,10 @@ async function main(): Promise<void> {
 
       // Fallback: send then edit
       if (!streamMsgId) {
+        if (progressMaterializing) {
+          log.debug('[flush] blocked by progressMaterializing');
+          return;
+        }
         if (sendingFirst) { log.debug('[flush] blocked by sendingFirst mutex'); return; }
         if (text.length < MIN_INITIAL_CHARS) { log.debug('[flush] text too short:', text.length); return; }
         sendingFirst = true;
@@ -863,7 +899,7 @@ async function main(): Promise<void> {
       );
     };
 
-    const ownsTurn = (turnId: string | null | undefined) => !!turnReservation.currentTurnId && turnId === turnReservation.currentTurnId;
+    const ownsTurn = (turnId: string | null | undefined) => !!turnId && turnReservation.ownedTurnIds.has(turnId);
 
     const onThink = ({ turnId, text }: SessionStreamEvent) => {
       if (!ownsTurn(turnId)) return;
@@ -903,6 +939,7 @@ async function main(): Promise<void> {
         activeToolStatus = summary.activeToolStatus;
       }
       if (summary.intentText || summary.thinkingSummary || summary.activeToolStatus) {
+        void materializeProgressSurface();
         schedEdit();
       }
     };
@@ -912,11 +949,13 @@ async function main(): Promise<void> {
       const summary = text.trim();
       if (!summary) return;
       thinkingText = summary;
+      void materializeProgressSurface();
       schedEdit();
     };
     const onToolStart = (t: ToolEvent & { turnId?: string | null }) => {
       if (!ownsTurn(t.turnId)) return;
       if (t.toolCallId) toolStartTimes.set(t.toolCallId, Date.now());
+      if (t.toolCallId) activeToolCallIds.add(t.toolCallId);
       // ask_user has its own UI (buttons/reply prompt) — suppress from tool display
       if (t.toolName === 'ask_user') return;
       sendTypingSafe();
@@ -935,7 +974,9 @@ async function main(): Promise<void> {
       }
       const statusSummary = formatToolStatus(t.toolName, t.arguments);
       // Always set active tool status (visible even with showTools off)
+      activeToolStatuses.set(t.toolCallId, statusSummary.statusLine);
       activeToolStatus = statusSummary.statusLine;
+      void materializeProgressSurface();
       schedEdit();
 
       if (!c.showTools) return;
@@ -964,15 +1005,39 @@ async function main(): Promise<void> {
       if (targetIndex >= 0) {
         const baseLine = toolLines[targetIndex].split('\n')[0]; // strip prior partial output
         toolLines[targetIndex] = baseLine + '\n```\n' + tail.join('\n') + '\n```';
+        void materializeProgressSurface();
         schedEdit();
       }
+    };
+    const onSubagentStart = (event: SubagentStartEvent) => {
+      if (!ownsTurn(event.turnId)) return;
+      const status = formatSubagentStatus(event);
+      activeToolStatuses.set(event.toolCallId, status.statusLine);
+      activeToolStatus = status.statusLine;
+      if (c.showTools && event.toolCallId) {
+        const lineIndex = toolLineIndexByCallId.get(event.toolCallId);
+        if (lineIndex !== undefined && lineIndex >= 0 && lineIndex < toolLines.length) {
+          toolLines[lineIndex] = status.statusLine;
+        } else {
+          toolLines.push(status.statusLine);
+        }
+      }
+      void materializeProgressSurface();
+      schedEdit();
+    };
+    const onTurnStart = ({ turnId }: { turnId: string | null }) => {
+      if (!ownsTurn(turnId)) return;
+      // Intentionally a no-op for now. Keeping the hook wired preserves the full
+      // event scaffold so we can add turn-start UX later without re-threading it.
     };
     const onToolEnd = (t: ToolEvent & { turnId?: string | null }) => {
       if (!ownsTurn(t.turnId)) return;
       // Clear partial output buffer for this tool
       const key = t.toolCallId ?? t.toolName;
       toolOutputBuffers.delete(key);
-      activeToolStatus = ''; // clear active tool status
+      if (t.toolCallId) activeToolCallIds.delete(t.toolCallId);
+      activeToolStatuses.delete(t.toolCallId);
+      activeToolStatus = activeToolStatuses.current() || (activeToolCallIds.size === 0 && !responseText ? '🧠 Reviewing results' : '');
       sendTypingSafe(); // re-send typing (Telegram cancels on edit)
       if (t.toolName === 'report_intent' || t.toolName === 'ask_user') return;
       if (!c.showTools || !toolLines.length) return;
@@ -989,6 +1054,7 @@ async function main(): Promise<void> {
         && !comparableText(toolLines[targetIndex]).includes(comparableText(completionDetail));
       toolLines[targetIndex] += (t.success !== false ? ' ✓' : ' ✗') + duration + (shouldAppendCompletionDetail ? ` — ${completionDetail}` : '');
       if (t.toolCallId) toolLineIndexByCallId.delete(t.toolCallId);
+      void materializeProgressSurface();
       schedEdit();
 
       // Send any generated images as Telegram photos
@@ -1057,7 +1123,9 @@ async function main(): Promise<void> {
     session.on('thinking_summary', onThinkSummary);
     session.on('thinking_event', onThink);
     session.on('delta_event', onDelta);
+    session.on('turn_start', onTurnStart);
     session.on('tool_start', onToolStart);
+    session.on('subagent_start', onSubagentStart);
     session.on('tool_output', onToolOutput);
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
@@ -1073,7 +1141,9 @@ async function main(): Promise<void> {
       session.off('thinking_summary', onThinkSummary);
       session.off('thinking_event', onThink);
       session.off('delta_event', onDelta);
+      session.off('turn_start', onTurnStart);
       session.off('tool_start', onToolStart);
+      session.off('subagent_start', onSubagentStart);
       session.off('tool_output', onToolOutput);
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);

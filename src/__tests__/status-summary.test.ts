@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractAssistantPlan, formatToolStatus, summarizeToolCompletionDetail } from '../status-summary.js';
+import { extractAssistantPlan, formatSubagentStatus, formatToolStatus, summarizeToolCompletionDetail } from '../status-summary.js';
 
 describe('status-summary', () => {
   it('formats task tool status using the human description first', () => {
@@ -70,6 +70,22 @@ describe('status-summary', () => {
     assert.equal(
       summarizeToolCompletionDetail('  Path does not exist\n\n  because the repo was renamed.  ', 36),
       'Path does not exist because the repo…',
+    );
+  });
+
+  it('formats subagent milestones for human-readable progress updates', () => {
+    assert.deepEqual(
+      formatSubagentStatus({ agentName: 'code-review', agentDisplayName: 'Code Review Agent' }),
+      {
+        statusLine: '🤖 Starting Code Review Agent',
+      },
+    );
+  });
+
+  it('suppresses noisy raw web fetch completion dumps', () => {
+    assert.equal(
+      summarizeToolCompletionDetail('Content type text/xml; charset=utf-8 cannot be simplified to markdown. Here is the raw content: Contents of https://feeds.bbci.co.uk/news/rss.xml: <?xml version="1.0"?>'),
+      'Fetched content',
     );
   });
 });
