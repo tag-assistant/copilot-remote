@@ -4,6 +4,7 @@ import type {
   ToolInfo,
   FileAttachment,
   SessionStreamEvent,
+  AssistantPlanEvent,
 } from './session.js';
 import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
@@ -23,8 +24,9 @@ import { resolveProviderConfig } from './provider-config.js';
 import { RestartManager, consumeRestartNotice, persistRestartNotice } from './restart-manager.js';
 import { acquireSingleInstanceLock, createInstanceOwner } from './single-instance.js';
 import { finalizeStreamResponse } from './stream-lifecycle.js';
+import { extractAssistantPlan, formatToolStatus, summarizeToolCompletionDetail } from './status-summary.js';
 import {
-  PROMPT_COMMANDS, TOOL_LABELS, LIFECYCLE_REACTIONS, PERM_ICONS,
+  PROMPT_COMMANDS, LIFECYCLE_REACTIONS, PERM_ICONS,
   MODE_ICONS,
   type ToolEvent, type UserInputRequest,
 } from './constants.js';
@@ -888,6 +890,30 @@ async function main(): Promise<void> {
       schedEdit();
     };
     const toolStartTimes = new Map<string, number>();
+    const toolLineIndexByCallId = new Map<string, number>();
+    const comparableText = (value: string) => value.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const onAssistantPlan = (plan: AssistantPlanEvent) => {
+      if (!ownsTurn(plan.turnId)) return;
+      const summary = extractAssistantPlan(plan);
+      if (summary.intentText && !intentText) intentText = summary.intentText;
+      if (summary.thinkingSummary && !responseText && c.showThinking) {
+        thinkingText = summary.thinkingSummary;
+      }
+      if (summary.activeToolStatus && !activeToolStatus) {
+        activeToolStatus = summary.activeToolStatus;
+      }
+      if (summary.intentText || summary.thinkingSummary || summary.activeToolStatus) {
+        schedEdit();
+      }
+    };
+    const onThinkSummary = ({ turnId, text }: SessionStreamEvent) => {
+      if (!ownsTurn(turnId)) return;
+      if (!c.showThinking || responseText) return;
+      const summary = text.trim();
+      if (!summary) return;
+      thinkingText = summary;
+      schedEdit();
+    };
     const onToolStart = (t: ToolEvent & { turnId?: string | null }) => {
       if (!ownsTurn(t.turnId)) return;
       if (t.toolCallId) toolStartTimes.set(t.toolCallId, Date.now());
@@ -907,22 +933,14 @@ async function main(): Promise<void> {
         if (intent) { intentText = String(intent); schedEdit(); }
         return;
       }
+      const statusSummary = formatToolStatus(t.toolName, t.arguments);
       // Always set active tool status (visible even with showTools off)
-      const toolLabel = TOOL_LABELS[t.toolName] ?? '🔧 ' + t.toolName;
-      let statusDetail = '';
-      if (t.arguments?.command) statusDetail = ' `' + String(t.arguments.command).slice(0, 80) + '`';
-      else if (t.arguments?.url) statusDetail = ' `' + String(t.arguments.url).slice(0, 80) + '`';
-      else if (t.arguments?.file_path) statusDetail = ' `' + String(t.arguments.file_path) + '`';
-      else if (t.arguments?.pattern) statusDetail = ' `' + String(t.arguments.pattern).slice(0, 60) + '`';
-      activeToolStatus = toolLabel + statusDetail;
+      activeToolStatus = statusSummary.statusLine;
       schedEdit();
 
       if (!c.showTools) return;
-      const label = TOOL_LABELS[t.toolName] ?? '🔧 ' + t.toolName;
-      let detail = '';
-      if (t.arguments?.command) detail = ' `' + t.arguments.command.slice(0, 60) + '`';
-      else if (t.arguments?.file_path) detail = ' `' + t.arguments.file_path + '`';
-      toolLines.push(label + detail);
+      const lineIndex = toolLines.push(statusSummary.statusLine) - 1;
+      if (t.toolCallId) toolLineIndexByCallId.set(t.toolCallId, lineIndex);
       schedEdit();
     };
     const toolOutputBuffers = new Map<string, string[]>();
@@ -941,9 +959,11 @@ async function main(): Promise<void> {
       const tail = lines.slice(-MAX_PARTIAL_LINES);
       toolOutputBuffers.set(key, tail);
       // Update the last tool line with partial output
-      if (toolLines.length) {
-        const baseLine = toolLines[toolLines.length - 1].split('\n')[0]; // strip prior partial output
-        toolLines[toolLines.length - 1] = baseLine + '\n```\n' + tail.join('\n') + '\n```';
+      const lineIndex = t.toolCallId ? toolLineIndexByCallId.get(t.toolCallId) : undefined;
+      const targetIndex = lineIndex ?? (toolLines.length ? toolLines.length - 1 : -1);
+      if (targetIndex >= 0) {
+        const baseLine = toolLines[targetIndex].split('\n')[0]; // strip prior partial output
+        toolLines[targetIndex] = baseLine + '\n```\n' + tail.join('\n') + '\n```';
         schedEdit();
       }
     };
@@ -956,14 +976,19 @@ async function main(): Promise<void> {
       sendTypingSafe(); // re-send typing (Telegram cancels on edit)
       if (t.toolName === 'report_intent' || t.toolName === 'ask_user') return;
       if (!c.showTools || !toolLines.length) return;
+      const lineIndex = t.toolCallId ? toolLineIndexByCallId.get(t.toolCallId) : undefined;
+      const targetIndex = lineIndex ?? (toolLines.length - 1);
+      if (targetIndex < 0 || targetIndex >= toolLines.length) return;
       // Strip partial output from tool line before adding completion mark
-      if (toolLines.length) {
-        toolLines[toolLines.length - 1] = toolLines[toolLines.length - 1].split('\n')[0];
-      }
+      toolLines[targetIndex] = toolLines[targetIndex].split('\n')[0];
       const elapsed = t.toolCallId ? toolStartTimes.get(t.toolCallId) : undefined;
       const duration = elapsed ? ` ${((Date.now() - elapsed) / 1000).toFixed(1)}s` : '';
       if (t.toolCallId) toolStartTimes.delete(t.toolCallId);
-      toolLines[toolLines.length - 1] += (t.success !== false ? ' ✓' : ' ✗') + duration;
+      const completionDetail = summarizeToolCompletionDetail(t.detailedContent);
+      const shouldAppendCompletionDetail = completionDetail
+        && !comparableText(toolLines[targetIndex]).includes(comparableText(completionDetail));
+      toolLines[targetIndex] += (t.success !== false ? ' ✓' : ' ✗') + duration + (shouldAppendCompletionDetail ? ` — ${completionDetail}` : '');
+      if (t.toolCallId) toolLineIndexByCallId.delete(t.toolCallId);
       schedEdit();
 
       // Send any generated images as Telegram photos
@@ -1028,6 +1053,8 @@ async function main(): Promise<void> {
       }
     };
 
+    session.on('assistant_plan', onAssistantPlan);
+    session.on('thinking_summary', onThinkSummary);
     session.on('thinking_event', onThink);
     session.on('delta_event', onDelta);
     session.on('tool_start', onToolStart);
@@ -1042,6 +1069,8 @@ async function main(): Promise<void> {
         clearTimeout(timer);
         timer = null;
       }
+      session.off('assistant_plan', onAssistantPlan);
+      session.off('thinking_summary', onThinkSummary);
       session.off('thinking_event', onThink);
       session.off('delta_event', onDelta);
       session.off('tool_start', onToolStart);

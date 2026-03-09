@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Session } from '../session.js';
+import type { AssistantPlanEvent } from '../session.js';
 
 type FakeEventHandler = (event: unknown) => void;
 
@@ -254,6 +255,66 @@ describe('Session', () => {
       success: true,
       detailedContent: 'done',
       images: ['base64-image-1', 'base64-image-2'],
+    });
+  });
+
+  it('emits richer planning metadata from assistant.message events', () => {
+    const session = new Session() as any;
+    let planEvent: AssistantPlanEvent | undefined;
+    let thinkingSummary: { turnId: string | null; text: string } | undefined;
+
+    session.activeTurnId = 'turn-7';
+    session.on('assistant_plan', (event: AssistantPlanEvent) => {
+      planEvent = event;
+    });
+    session.on('thinking_summary', (event: { turnId: string | null; text: string }) => {
+      thinkingSummary = event;
+    });
+
+    session.handleEvent({
+      type: 'assistant.message',
+      data: {
+        content: '',
+        reasoningText: 'Use the code-review agent for this repo audit.',
+        toolRequests: [
+          { toolCallId: 'call-1', name: 'report_intent', arguments: { intent: 'Reviewing code changes' }, type: 'function' },
+          { toolCallId: 'call-2', name: 'task', arguments: { agent_type: 'code-review' }, type: 'function' },
+        ],
+      },
+    } as any);
+
+    assert.deepEqual(thinkingSummary, {
+      turnId: 'turn-7',
+      text: 'Use the code-review agent for this repo audit.',
+    });
+    assert.deepEqual(planEvent, {
+      turnId: 'turn-7',
+      content: undefined,
+      reasoningText: 'Use the code-review agent for this repo audit.',
+      toolRequests: [
+        { toolCallId: 'call-1', name: 'report_intent', arguments: { intent: 'Reviewing code changes' }, type: 'function' },
+        { toolCallId: 'call-2', name: 'task', arguments: { agent_type: 'code-review' }, type: 'function' },
+      ],
+    });
+  });
+
+  it('emits thinking summaries from assistant.reasoning events', () => {
+    const session = new Session() as any;
+    let thinkingSummary: { turnId: string | null; text: string } | undefined;
+
+    session.activeTurnId = 'turn-9';
+    session.on('thinking_summary', (event: { turnId: string | null; text: string }) => {
+      thinkingSummary = event;
+    });
+
+    session.handleEvent({
+      type: 'assistant.reasoning',
+      data: { content: 'First, inspect the repository state.' },
+    } as any);
+
+    assert.deepEqual(thinkingSummary, {
+      turnId: 'turn-9',
+      text: 'First, inspect the repository state.',
     });
   });
 

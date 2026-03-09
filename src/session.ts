@@ -146,6 +146,20 @@ export interface SessionStreamEvent {
   text: string;
 }
 
+export interface AssistantPlanToolRequest {
+  toolCallId?: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+  type?: string;
+}
+
+export interface AssistantPlanEvent {
+  turnId: string | null;
+  content?: string;
+  reasoningText?: string;
+  toolRequests: AssistantPlanToolRequest[];
+}
+
 interface PendingTurnReservation {
   reservation: SessionTurnReservation;
   resolve: (turnId: string) => void;
@@ -493,10 +507,45 @@ export class Session extends EventEmitter {
         break;
       }
       case 'assistant.reasoning':
+        if (text) {
+          this.emit('thinking_summary', { turnId: this.activeTurnId, text } as SessionStreamEvent);
+        }
         break;
-      case 'assistant.message':
-        this.emit('message', d.content ?? '');
+      case 'assistant.message': {
+        const content = typeof d.content === 'string' ? d.content : '';
+        const reasoningText = typeof d.reasoningText === 'string' ? d.reasoningText : undefined;
+        const rawToolRequests = Array.isArray((e.data as { toolRequests?: unknown }).toolRequests)
+          ? (e.data as { toolRequests: unknown[] }).toolRequests
+          : [];
+        const toolRequests = rawToolRequests.flatMap((toolRequest) => {
+          if (!toolRequest || typeof toolRequest !== 'object') return [];
+          const request = toolRequest as Record<string, unknown>;
+          const name = typeof request.name === 'string' ? request.name : undefined;
+          if (!name) return [];
+          return [{
+            toolCallId: typeof request.toolCallId === 'string' ? request.toolCallId : undefined,
+            name,
+            arguments: request.arguments && typeof request.arguments === 'object'
+              ? request.arguments as Record<string, unknown>
+              : undefined,
+            type: typeof request.type === 'string' ? request.type : undefined,
+          } satisfies AssistantPlanToolRequest];
+        });
+
+        this.emit('message', content);
+        if (reasoningText) {
+          this.emit('thinking_summary', { turnId: this.activeTurnId, text: reasoningText } as SessionStreamEvent);
+        }
+        if (content || reasoningText || toolRequests.length) {
+          this.emit('assistant_plan', {
+            turnId: this.activeTurnId,
+            content: content || undefined,
+            reasoningText,
+            toolRequests,
+          } satisfies AssistantPlanEvent);
+        }
         break;
+      }
       case 'assistant.usage':
         this.emit('usage', d);
         break;
