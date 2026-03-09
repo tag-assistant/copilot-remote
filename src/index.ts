@@ -3,6 +3,7 @@ import { Session } from './session.js';
 import type {
   ToolInfo,
   FileAttachment,
+  SessionStreamEvent,
 } from './session.js';
 import type { Client, MessageOptions, Button } from './client.js';
 import type { ModelInfo, PermissionRequest } from '@github/copilot-sdk';
@@ -16,8 +17,11 @@ import { handleAgentCallback } from './agent-menu.js';
 import { handleCdCommand } from './cd-command.js';
 import { handleIncomingFileUpload } from './file-intake.js';
 import { log } from './log.js';
+import { formatPromptLogText } from './prompt-log.js';
+import { formatPromptTimeline, type PromptTimelineEntry } from './prompt-timeline.js';
 import { resolveProviderConfig } from './provider-config.js';
 import { RestartManager } from './restart-manager.js';
+import { acquireSingleInstanceLock, createInstanceOwner } from './single-instance.js';
 import { finalizeStreamResponse } from './stream-lifecycle.js';
 import {
   PROMPT_COMMANDS, TOOL_LABELS, LIFECYCLE_REACTIONS, PERM_ICONS,
@@ -32,10 +36,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
+import { performance } from 'node:perf_hooks';
 import * as readline from 'readline';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
+let nextPromptTraceId = 0;
+
+function createPromptTraceId(msgId: number): string {
+  nextPromptTraceId = (nextPromptTraceId + 1) % Number.MAX_SAFE_INTEGER;
+  return `${msgId.toString(36)}-${Date.now().toString(36)}-${nextPromptTraceId.toString(36)}`;
+}
 
 function findBin(name: string): string | undefined {
   try {
@@ -134,6 +145,24 @@ async function main(): Promise<void> {
   } else if (config._file?.debug) {
     log.setDebug(true);
   }
+
+  const lockDir = path.join(process.env.HOME ?? '.', '.copilot-remote', 'copilot-remote.lock');
+  const lockResult = acquireSingleInstanceLock(lockDir, createInstanceOwner());
+  if (!lockResult.acquired) {
+    const existing = lockResult.failure.existing;
+    log.warn(
+      '[singleton] Another copilot-remote instance is already running.',
+      existing
+        ? `pid=${existing.pid} cwd=${existing.cwd || '-'} argv=${JSON.stringify(existing.argv.slice(0, 4))}`
+        : `lockDir=${lockResult.failure.lockDir}`,
+    );
+    return;
+  }
+  const instanceLock = lockResult.lock;
+  process.on('exit', () => {
+    instanceLock.release();
+  });
+
   const botToken = config.fakeTelegram ? 'mock-telegram-token' : await ensureBotToken(config);
   const bin = config.copilotBinary ?? findBin('copilot');
 
@@ -531,32 +560,59 @@ async function main(): Promise<void> {
   };
 
   // ── Prompt handler (streaming + reactions) ──
-  async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
+  async function handlePrompt(
+    chatId: string,
+    msgId: number,
+    prompt: string,
+    attachments?: FileAttachment[],
+    attempt = 1,
+    promptTraceId = createPromptTraceId(msgId),
+  ): Promise<void> {
     log.info(
       '[prompt:start]',
+      `req=${promptTraceId}`,
+      `attempt=${attempt}`,
       `chat=${chatId}`,
       `msg=${msgId}`,
       `attachments=${attachments?.length ?? 0}`,
       `text=${JSON.stringify(prompt.replace(/\s+/g, ' ').trim().slice(0, 200))}`,
     );
     const turnStartedAt = performance.now();
+    const timelineEntries: PromptTimelineEntry[] = [{ label: 'start', atMs: 0 }];
+    const markTimeline = (label: string, detail?: string, at = performance.now()) => {
+      timelineEntries.push({ label, atMs: at - turnStartedAt, detail });
+    };
+    const logPromptTimeline = (status: string, detail?: string) => {
+      const timeline = detail
+        ? [...timelineEntries, { label: status, atMs: performance.now() - turnStartedAt, detail }]
+        : timelineEntries;
+      log.info(
+        '[prompt:timeline]',
+        `req=${promptTraceId}`,
+        `attempt=${attempt}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `status=${status}`,
+        `timeline=${JSON.stringify(formatPromptTimeline(timeline))}`,
+      );
+    };
     const responseMessageOpts: MessageOptions = { disableLinkPreview: true, replyTo: msgId };
     let typingFails = 0;
     const MAX_TYPING_FAILS = 3;
-    let typingInterval: NodeJS.Timeout | null = null;
     const sendTypingSafe = () => {
       if (typingFails >= MAX_TYPING_FAILS) return;
       client.sendTyping(chatId).catch(() => { typingFails++; });
     };
     // Show typing immediately — session creation can take seconds
     sendTypingSafe();
-    typingInterval = setInterval(() => sendTypingSafe(), 3000);
+    const typingInterval = setInterval(() => sendTypingSafe(), 3000);
     const c = cfg(chatId);
     let streamMsgId: number | null = null;
     let draftId: number | null = null;
     let useDraft = !!client.sendDraft; // try draft mode if client supports it
     let thinkingText = '',
       responseText = '';
+    let thinkingLogText = '';
     let intentText = '';
     const toolLines: string[] = [];
     let activeToolStatus = '';
@@ -565,16 +621,20 @@ async function main(): Promise<void> {
     const THROTTLE = useDraft ? 120 : 180; // keep updates snappy without spamming Telegram
     let sendingFirst = false; // mutex: prevent duplicate first-message sends
     let placeholderPrimed = false;
-    let sessionReadyAt: number | null = null;
+    let sessionReadyAt: number | undefined;
     let firstDeltaAt: number | null = null;
     let firstVisibleAt: number | null = null;
+    let firstStreamPhase: 'thinking' | 'response' | null = null;
     let telegramApiCalls = 0;
     let telegramApiMs = 0;
 
     const noteTelegramCall = (startedAt: number, visible = false) => {
       telegramApiCalls++;
       telegramApiMs += performance.now() - startedAt;
-      if (visible && firstVisibleAt === null) firstVisibleAt = performance.now();
+      if (visible && firstVisibleAt === null) {
+        firstVisibleAt = performance.now();
+        markTimeline('first_visible');
+      }
     };
 
     const display = () => {
@@ -602,17 +662,19 @@ async function main(): Promise<void> {
         noteTelegramCall(tgStart, ok);
         if (ok) {
           placeholderPrimed = true;
+          markTimeline('placeholder', 'draft');
           log.debug('Stream: primed draft', draftId, 'for', chatId);
           return;
         }
         useDraft = false;
       }
 
-      const tgStart = performance.now();
-  const sentMsgId = await client.sendMessage(chatId, text, responseMessageOpts);
+        const tgStart = performance.now();
+        const sentMsgId = await client.sendMessage(chatId, text, responseMessageOpts);
       noteTelegramCall(tgStart, sentMsgId !== null);
       streamMsgId = sentMsgId;
       placeholderPrimed = streamMsgId !== null;
+      if (streamMsgId !== null) markTimeline('placeholder', 'message');
       log.debug('Stream: primed message', streamMsgId, 'for', chatId);
     };
 
@@ -623,6 +685,8 @@ async function main(): Promise<void> {
       }
       session = await getSession(chatId);
       sessionReadyAt = performance.now();
+      markTimeline('session', `id=${session.sessionId ?? '-'}`, sessionReadyAt);
+      log.info('[prompt:session]', `req=${promptTraceId}`, `attempt=${attempt}`, `chat=${chatId}`, `msg=${msgId}`, `sessionId=${session.sessionId ?? '-'}`, `busy=${session.busy}`);
     } catch (err: unknown) {
       const msg = (err as Error)?.message ?? String(err);
       // If reasoning effort not supported, retry without it
@@ -632,6 +696,8 @@ async function main(): Promise<void> {
         try {
           session = await getSession(chatId);
           sessionReadyAt = performance.now();
+          markTimeline('session', `id=${session.sessionId ?? '-'};retry=no-reasoning-effort`, sessionReadyAt);
+          log.info('[prompt:session]', `req=${promptTraceId}`, `attempt=${attempt}`, `chat=${chatId}`, `msg=${msgId}`, `sessionId=${session.sessionId ?? '-'}`, `busy=${session.busy}`, 'retry=no-reasoning-effort');
         } catch (err2: unknown) {
           if (typingInterval) clearInterval(typingInterval);
           await client.sendMessage(chatId, '❌ Session failed: ' + ((err2 as Error)?.message ?? String(err2)), { replyTo: msgId });
@@ -659,6 +725,7 @@ async function main(): Promise<void> {
     }
     client.sendTyping(chatId);
     await primeStreamSurface();
+    const turnReservation = session.reserveTurn();
     const react = c.showReactions ? (e: string) => { client.setReaction(chatId, msgId, e).then(() => sendTypingSafe()).catch(() => {}); } : () => {};
     react(LIFECYCLE_REACTIONS.received);
     sendTypingSafe();
@@ -718,25 +785,97 @@ async function main(): Promise<void> {
       if (!timer) timer = setTimeout(() => { flush().catch(() => {}); }, Math.max(0, THROTTLE - (Date.now() - lastEdit)));
     };
 
-    const onThink = (t: string) => {
+    const noteFirstStreamEvent = (phase: 'thinking' | 'response', chunk: string) => {
+      if (firstStreamPhase) return;
+      firstStreamPhase = phase;
+      markTimeline('first_delta', phase);
+      log.info(
+        '[prompt:first-delta]',
+        `req=${promptTraceId}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `phase=${phase}`,
+        `turnId=${turnReservation.currentTurnId ?? '-'}`,
+        `chars=${chunk.length}`,
+      );
+    };
+
+    const logCopilotChunk = (
+      kind: 'thinking' | 'response',
+      turnId: string | null | undefined,
+      text: string,
+    ) => {
+      if (log.shouldLog('debug')) {
+        log.debug(
+          `[copilot:${kind}:chunk]`,
+          `req=${promptTraceId}`,
+          `chat=${chatId}`,
+          `msg=${msgId}`,
+          `turnId=${turnId ?? '-'}`,
+          `chars=${text.length}`,
+          `text=${JSON.stringify(text)}`,
+        );
+        return;
+      }
+
+      log.verbose(
+        `[copilot:${kind}:chunk]`,
+        `req=${promptTraceId}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `turnId=${turnId ?? '-'}`,
+        `chars=${text.length}`,
+        `text=${JSON.stringify(formatPromptLogText(text, 400))}`,
+      );
+    };
+
+    const logCopilotFinal = (
+      kind: 'thinking' | 'response',
+      text: string,
+      maxChars: number,
+    ) => {
+      const payload = log.shouldLog('debug') ? text : formatPromptLogText(text, maxChars);
+      log.info(
+        `[copilot:${kind}]`,
+        `req=${promptTraceId}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `sessionId=${session.sessionId ?? '-'}`,
+        `turnId=${turnReservation.currentTurnId ?? '-'}`,
+        `chars=${text.length}`,
+        `text=${JSON.stringify(payload)}`,
+      );
+    };
+
+    const ownsTurn = (turnId: string | null | undefined) => !!turnReservation.currentTurnId && turnId === turnReservation.currentTurnId;
+
+    const onThink = ({ turnId, text }: SessionStreamEvent) => {
+      if (!ownsTurn(turnId)) return;
       if (firstDeltaAt === null) firstDeltaAt = performance.now();
+      noteFirstStreamEvent('thinking', text);
+      thinkingLogText += text;
+      logCopilotChunk('thinking', turnId, text);
       if (!c.showThinking) return;
       if (!thinkingText) react(LIFECYCLE_REACTIONS.thinking);
-      thinkingText += t;
+      thinkingText += text;
       schedEdit(); // thinking shows inline in the main streaming message
     };
 
-    const onDelta = (t: string) => {
+    const onDelta = ({ turnId, text }: SessionStreamEvent) => {
+      if (!ownsTurn(turnId)) return;
       if (firstDeltaAt === null) firstDeltaAt = performance.now();
+      noteFirstStreamEvent('response', text);
+      logCopilotChunk('response', turnId, text);
       if (thinkingText) {
         thinkingText = '';
       }
       if (!responseText) react(LIFECYCLE_REACTIONS.writing);
-      responseText += t;
+      responseText += text;
       schedEdit();
     };
     const toolStartTimes = new Map<string, number>();
-    const onToolStart = (t: ToolEvent) => {
+    const onToolStart = (t: ToolEvent & { turnId?: string | null }) => {
+      if (!ownsTurn(t.turnId)) return;
       if (t.toolCallId) toolStartTimes.set(t.toolCallId, Date.now());
       // ask_user has its own UI (buttons/reply prompt) — suppress from tool display
       if (t.toolName === 'ask_user') return;
@@ -774,7 +913,8 @@ async function main(): Promise<void> {
     };
     const toolOutputBuffers = new Map<string, string[]>();
     const MAX_PARTIAL_LINES = 3;
-    const onToolOutput = (t: { toolCallId?: string; toolName: string; content: unknown }) => {
+    const onToolOutput = (t: { turnId?: string | null; toolCallId?: string; toolName: string; content: unknown }) => {
+      if (!ownsTurn(t.turnId)) return;
       if (!c.showTools) return;
       const text = typeof t.content === 'string' ? t.content : JSON.stringify(t.content ?? '');
       if (!text.trim()) return;
@@ -793,7 +933,8 @@ async function main(): Promise<void> {
         schedEdit();
       }
     };
-    const onToolEnd = (t: ToolEvent) => {
+    const onToolEnd = (t: ToolEvent & { turnId?: string | null }) => {
+      if (!ownsTurn(t.turnId)) return;
       // Clear partial output buffer for this tool
       const key = t.toolCallId ?? t.toolName;
       toolOutputBuffers.delete(key);
@@ -819,7 +960,8 @@ async function main(): Promise<void> {
         }
       }
     };
-    const onPerm = async (req: PermissionRequest) => {
+    const onPerm = async (req: PermissionRequest & { turnId?: string | null }) => {
+      if (!ownsTurn(req.turnId)) return;
       log.debug('onPerm called:', JSON.stringify(req).slice(0, 200));
       const p = (req as PermissionRequest & { permissionRequest?: PermissionRequest }).permissionRequest ?? req;
       const kind = p.kind as PermKind;
@@ -858,7 +1000,8 @@ async function main(): Promise<void> {
       if (id) pendingPerms.set(id, chatId);
     };
 
-    const onUserInput = async (req: UserInputRequest) => {
+    const onUserInput = async (req: UserInputRequest & { turnId?: string | null }) => {
+      if (!ownsTurn(req.turnId)) return;
       const question = req.question ?? (typeof req === 'string' ? req : JSON.stringify(req));
       const choices = req.choices as string[] | undefined;
       if (choices?.length) {
@@ -871,8 +1014,8 @@ async function main(): Promise<void> {
       }
     };
 
-    session.on('thinking', onThink);
-    session.on('delta', onDelta);
+    session.on('thinking_event', onThink);
+    session.on('delta_event', onDelta);
     session.on('tool_start', onToolStart);
     session.on('tool_output', onToolOutput);
     session.on('tool_complete', onToolEnd);
@@ -885,8 +1028,8 @@ async function main(): Promise<void> {
         clearTimeout(timer);
         timer = null;
       }
-      session.off('thinking', onThink);
-      session.off('delta', onDelta);
+      session.off('thinking_event', onThink);
+      session.off('delta_event', onDelta);
       session.off('tool_start', onToolStart);
       session.off('tool_output', onToolOutput);
       session.off('tool_complete', onToolEnd);
@@ -896,16 +1039,82 @@ async function main(): Promise<void> {
 
     let res: { content: string };
     try {
-      res = await session.send(prompt, attachments);
+      log.info(
+        '[prompt:send]',
+        `req=${promptTraceId}`,
+        `attempt=${attempt}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `sessionId=${session.sessionId ?? '-'}`,
+        `mode=${session.messageMode ?? 'enqueue'}`,
+      );
+      markTimeline('send', `mode=${session.messageMode ?? 'enqueue'}`);
+      res = await session.send(prompt, attachments, turnReservation);
     } catch (sendErr) {
       log.error('[prompt:error]', sendErr);
       cleanup();
       if (typingInterval) clearInterval(typingInterval);
+      const errMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      const isTimeout = errMsg.toLowerCase().includes('timeout');
+      const hadNoCopilotEvents = firstDeltaAt === null && firstStreamPhase === null;
+      const shouldRetryFresh = isTimeout && hadNoCopilotEvents && attempt < 2;
+
+      if (shouldRetryFresh) {
+        markTimeline('retry_fresh', 'no-sdk-events-before-timeout');
+        logPromptTimeline('retry_fresh');
+        log.warn(
+          '[prompt:retry-fresh]',
+          `req=${promptTraceId}`,
+          `attempt=${attempt}`,
+          `chat=${chatId}`,
+          `msg=${msgId}`,
+          `sessionId=${session.sessionId ?? '-'}`,
+          'reason=no-sdk-events-before-timeout',
+        );
+        try { session.kill(); } catch { /* ignore */ }
+        sessions.delete(chatId);
+        await purgeSessionPersistence(chatId, session.sessionId ?? undefined);
+        await Session.resetSharedClient(`timeout-no-events req=${promptTraceId} chat=${chatId}`);
+        log.info(
+          '[prompt:retrying]',
+          `req=${promptTraceId}`,
+          `attempt=${attempt + 1}`,
+          `chat=${chatId}`,
+          `msg=${msgId}`,
+        );
+        return handlePrompt(chatId, msgId, prompt, attachments, attempt + 1, promptTraceId);
+      }
+
       // Kill the broken session so it doesn't linger
       try { session.kill(); } catch { /* ignore */ }
       sessions.delete(chatId);
       await purgeSessionPersistence(chatId, session.sessionId ?? undefined);
-      const errMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      if (errMsg.toLowerCase().includes('timeout')) {
+        logPromptTimeline('timeout', firstStreamPhase ?? 'none');
+        log.warn(
+          '[prompt:timeout]',
+          `req=${promptTraceId}`,
+          `attempt=${attempt}`,
+          `chat=${chatId}`,
+          `msg=${msgId}`,
+          `sessionId=${session.sessionId ?? '-'}`,
+          `elapsed=${Math.round(performance.now() - turnStartedAt)}ms`,
+          `phase=${firstStreamPhase ?? 'none'}`,
+        );
+      } else {
+        logPromptTimeline('failed', errMsg.slice(0, 80));
+        log.warn(
+          '[prompt:failed]',
+          `req=${promptTraceId}`,
+          `attempt=${attempt}`,
+          `chat=${chatId}`,
+          `msg=${msgId}`,
+          `sessionId=${session.sessionId ?? '-'}`,
+          `elapsed=${Math.round(performance.now() - turnStartedAt)}ms`,
+          `phase=${firstStreamPhase ?? 'none'}`,
+          `error=${JSON.stringify(errMsg.slice(0, 200))}`,
+        );
+      }
       react(LIFECYCLE_REACTIONS.error);
       const userMsg = errMsg.includes('STREAM_DESTROYED') ? '💀 Lost connection to Copilot. Send a message to reconnect.'
         : errMsg.includes('timeout') ? '⏱️ Request timed out. Send a message to try again.'
@@ -931,20 +1140,47 @@ async function main(): Promise<void> {
       else if (finalization === 'resent') log.debug('[finalize] multi-chunk: delete + resend');
       else log.debug('[finalize] no streamMsgId, sending fresh');
       noteTelegramCall(tgStart, true);
+      markTimeline('done', `final=${finalization}`);
+      if (thinkingLogText.trim()) {
+        logCopilotFinal('thinking', thinkingLogText, 2000);
+      }
+      logCopilotFinal('response', final, 4000);
+      logPromptTimeline('done');
       react(LIFECYCLE_REACTIONS.complete);
       log.info(
         '[perf]',
+        `req=${promptTraceId}`,
         `total=${Math.round(performance.now() - turnStartedAt)}ms`,
         `session=${Math.round((sessionReadyAt ?? turnStartedAt) - turnStartedAt)}ms`,
         `ttfd=${firstDeltaAt === null ? '-' : Math.round(firstDeltaAt - turnStartedAt) + 'ms'}`,
         `ttfv=${firstVisibleAt === null ? '-' : Math.round(firstVisibleAt - turnStartedAt) + 'ms'}`,
         `tgApi=${telegramApiCalls}(${Math.round(telegramApiMs)}ms)`,
       );
-      log.info('[prompt:done]', `chat=${chatId}`, `msg=${msgId}`, `responseChars=${final.length}`);
+      log.info(
+        '[prompt:done]',
+        `req=${promptTraceId}`,
+        `attempt=${attempt}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `sessionId=${session.sessionId ?? '-'}`,
+        `turnId=${turnReservation.currentTurnId ?? '-'}`,
+        `responseChars=${final.length}`,
+        `phase=${firstStreamPhase ?? 'none'}`,
+      );
     } catch (err) {
       log.error('[finalize] error:', err);
       cleanup();
       if (typingInterval) clearInterval(typingInterval);
+      logPromptTimeline('finalize_failed', err instanceof Error ? err.message.slice(0, 80) : String(err).slice(0, 80));
+      log.warn(
+        '[prompt:finalize-failed]',
+        `req=${promptTraceId}`,
+        `attempt=${attempt}`,
+        `chat=${chatId}`,
+        `msg=${msgId}`,
+        `sessionId=${session.sessionId ?? '-'}`,
+        `turnId=${turnReservation.currentTurnId ?? '-'}`,
+      );
       react(LIFECYCLE_REACTIONS.error);
       await client.sendMessage(chatId, '❌ ' + String(err), { replyTo: msgId });
     }
@@ -1843,6 +2079,7 @@ async function main(): Promise<void> {
     restartManager.stop();
     client.stop();
     await Promise.allSettled([...sessions.values()].map((s) => s.disconnect().catch(() => {})));
+    instanceLock.release();
     process.exit(restart ? 75 : 0);
   };
   process.on('SIGINT', () => shutdown());

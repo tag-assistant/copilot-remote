@@ -3,6 +3,7 @@ import type { PermKind } from './config-store.js';
 
 /** Tool execution event emitted by the session */
 export interface ToolEvent {
+  turnId?: string | null;
   toolCallId?: string;
   toolName: string;
   arguments?: Record<string, string>;
@@ -13,6 +14,7 @@ export interface ToolEvent {
 
 /** User input request from the agent */
 export interface UserInputRequest {
+  turnId?: string | null;
   question: string;
   choices?: string[];
 }

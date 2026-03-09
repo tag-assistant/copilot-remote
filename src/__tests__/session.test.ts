@@ -74,13 +74,16 @@ describe('Session', () => {
     });
   });
 
-  it('sends prompts directly to SDK (SDK handles queueing via enqueue mode)', async () => {
+  it('serializes queued sends and isolates streamed events by reserved turn', async () => {
     const session = createTestSession();
     let releaseFirst: (() => void) | undefined;
 
     const sdk = createFakeSdkSession(async (opts) => {
       const prompt = String(opts.prompt ?? '');
-      session.emit('delta', `${prompt}-delta`);
+      const turnId = prompt === 'first' ? 'turn-1' : 'turn-2';
+      session.handleEvent({ type: 'assistant.turn_start', data: { turnId } } as any);
+      session.handleEvent({ type: 'assistant.reasoning_delta', data: { deltaContent: `${prompt}-thinking` } } as any);
+      session.handleEvent({ type: 'assistant.message_delta', data: { deltaContent: `${prompt}-delta` } } as any);
 
       if (prompt === 'first') {
         await new Promise<void>((resolve) => {
@@ -88,23 +91,36 @@ describe('Session', () => {
         });
       }
 
+      session.handleEvent({ type: 'assistant.turn_end', data: { turnId } } as any);
+
       return { data: { content: `${prompt}-final` } };
     });
 
     session.session = sdk;
     session.messageMode = 'enqueue';
 
-    const first = session.send('first');
-    const second = session.send('second');
+    const firstReservation = session.reserveTurn();
+    const secondReservation = session.reserveTurn();
+    const firstThinking: string[] = [];
+    const secondThinking: string[] = [];
+
+    session.on('thinking_event', (event: { turnId: string | null; text: string }) => {
+      if (event.turnId === firstReservation.currentTurnId) firstThinking.push(event.text);
+      if (event.turnId === secondReservation.currentTurnId) secondThinking.push(event.text);
+    });
+
+    const first = session.send('first', undefined, firstReservation);
+    const second = session.send('second', undefined, secondReservation);
 
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    // Both calls are made immediately — SDK handles queueing internally
-    assert.equal(sdk.sendAndWaitCalls.length, 2);
+    // Only the active turn should be running; queued sends wait their turn in the wrapper.
+    assert.equal(sdk.sendAndWaitCalls.length, 1);
     assert.equal(sdk.sendAndWaitCalls[0]?.prompt, 'first');
-    assert.equal(sdk.sendAndWaitCalls[1]?.prompt, 'second');
 
     releaseFirst?.();
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
@@ -112,9 +128,10 @@ describe('Session', () => {
       sdk.sendAndWaitCalls.map((call) => call.prompt),
       ['first', 'second'],
     );
-    // Both deltas are captured by their respective send() calls
-    assert.ok(firstResult.content.includes('first-delta'));
-    assert.ok(secondResult.content.includes('second-delta'));
+    assert.equal(firstResult.content, 'first-delta');
+    assert.equal(secondResult.content, 'second-delta');
+    assert.deepEqual(firstThinking, ['first-thinking']);
+    assert.deepEqual(secondThinking, ['second-thinking']);
   });
 
   it('falls back to final SDK content when no delta events were streamed', async () => {
@@ -231,6 +248,7 @@ describe('Session', () => {
     } as any);
 
     assert.deepEqual(toolEvent, {
+      turnId: null,
       toolCallId: 'call-1',
       toolName: 'generate_image',
       success: true,
@@ -343,5 +361,76 @@ describe('Session', () => {
     }
 
     assert.deepEqual(deleted, ['telegram--100123-thread-42']);
+  });
+
+  it('resetSharedClient stops and clears the shared client state', async () => {
+    const originalSharedClient = (Session as any).sharedClient;
+    const originalSharedClientStarting = (Session as any).sharedClientStarting;
+    const originalSharedClientSignature = (Session as any).sharedClientSignature;
+    const originalClientRefCount = (Session as any).clientRefCount;
+    let stopCalls = 0;
+    let forceStopCalls = 0;
+
+    (Session as any).sharedClient = {
+      async stop() {
+        stopCalls++;
+        return [];
+      },
+      async forceStop() {
+        forceStopCalls++;
+      },
+    };
+    (Session as any).sharedClientStarting = Promise.resolve();
+    (Session as any).sharedClientSignature = 'sig';
+    (Session as any).clientRefCount = 3;
+
+    try {
+      await Session.resetSharedClient('test-reset');
+    } finally {
+      (Session as any).sharedClient = originalSharedClient;
+      (Session as any).sharedClientStarting = originalSharedClientStarting;
+      (Session as any).sharedClientSignature = originalSharedClientSignature;
+      (Session as any).clientRefCount = originalClientRefCount;
+    }
+
+    assert.equal(stopCalls, 1);
+    assert.equal(forceStopCalls, 0);
+    assert.equal((Session as any).sharedClient, originalSharedClient);
+    assert.equal((Session as any).sharedClientSignature, originalSharedClientSignature);
+    assert.equal((Session as any).clientRefCount, originalClientRefCount);
+  });
+
+  it('resetSharedClient force stops when graceful stop fails', async () => {
+    const originalSharedClient = (Session as any).sharedClient;
+    const originalSharedClientStarting = (Session as any).sharedClientStarting;
+    const originalSharedClientSignature = (Session as any).sharedClientSignature;
+    const originalClientRefCount = (Session as any).clientRefCount;
+    let forceStopCalls = 0;
+
+    (Session as any).sharedClient = {
+      async stop() {
+        throw new Error('boom');
+      },
+      async forceStop() {
+        forceStopCalls++;
+      },
+    };
+    (Session as any).sharedClientStarting = null;
+    (Session as any).sharedClientSignature = 'sig';
+    (Session as any).clientRefCount = 2;
+
+    try {
+      await Session.resetSharedClient('test-force-reset');
+    } finally {
+      (Session as any).sharedClient = originalSharedClient;
+      (Session as any).sharedClientStarting = originalSharedClientStarting;
+      (Session as any).sharedClientSignature = originalSharedClientSignature;
+      (Session as any).clientRefCount = originalClientRefCount;
+    }
+
+    assert.equal(forceStopCalls, 1);
+    assert.equal((Session as any).sharedClient, originalSharedClient);
+    assert.equal((Session as any).sharedClientSignature, originalSharedClientSignature);
+    assert.equal((Session as any).clientRefCount, originalClientRefCount);
   });
 });

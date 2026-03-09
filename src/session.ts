@@ -19,6 +19,7 @@ import { log } from './log.js';
 import type { RemoteProviderConfig } from './provider-config.js';
 import type { MCPServerConfig } from './mcp-config.js';
 import { createTelegramTools } from './tools.js';
+import { formatLogFields, summarizeSdkEvent } from './transport-log.js';
 
 /** Reasoning effort levels supported by the SDK */
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
@@ -135,6 +136,22 @@ export interface CopilotMessage {
   usage?: { inputTokens?: number; outputTokens?: number; model?: string };
 }
 
+export interface SessionTurnReservation {
+  turnId: Promise<string>;
+  currentTurnId: string | null;
+}
+
+export interface SessionStreamEvent {
+  turnId: string | null;
+  text: string;
+}
+
+interface PendingTurnReservation {
+  reservation: SessionTurnReservation;
+  resolve: (turnId: string) => void;
+  reject: (error: Error) => void;
+}
+
 export class Session extends EventEmitter {
   // Shared CopilotClient — one CLI process for all sessions
   private static sharedClient: CopilotClient | null = null;
@@ -219,6 +236,46 @@ export class Session extends EventEmitter {
     await client.deleteSession(sessionId);
   }
 
+  static async resetSharedClient(reason = 'unknown'): Promise<void> {
+    const client = Session.sharedClient;
+    const pending = Session.sharedClientStarting;
+
+    Session.sharedClient = null;
+    Session.sharedClientStarting = null;
+    Session.sharedClientSignature = null;
+    Session.clientRefCount = 0;
+
+    if (client) {
+      try {
+        const stopPromise = client.stop();
+        const stopTimedOut = await Promise.race([
+          stopPromise.then(() => false),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 5000)),
+        ]);
+        if (stopTimedOut) {
+          log.warn('[shared-client] stop timed out, force stopping:', reason);
+          await client.forceStop();
+        }
+      } catch (error) {
+        log.warn('[shared-client] reset failed, force stopping:', reason, error);
+        try {
+          await client.forceStop();
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   private static releaseClient() {
     Session.clientRefCount--;
     // Don't stop — keep the process alive for future sessions
@@ -231,6 +288,11 @@ export class Session extends EventEmitter {
   private _autopilot = false;
   private _messageMode: 'enqueue' | 'immediate' | undefined = undefined;
   private cwd = '';
+  private activeTurnId: string | null = null;
+  private pendingTurnReservations: PendingTurnReservation[] = [];
+  private sendChain: Promise<void> = Promise.resolve();
+  private sdkEventSeq = 0;
+  private lastSdkEventAt: number | null = null;
 
   get alive() {
     return this._alive;
@@ -253,6 +315,45 @@ export class Session extends EventEmitter {
   }
   set messageMode(v: 'enqueue' | 'immediate' | undefined) {
     this._messageMode = v;
+  }
+
+  reserveTurn(): SessionTurnReservation {
+    let resolve!: (turnId: string) => void;
+    let reject!: (error: Error) => void;
+    const turnId = new Promise<string>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    void turnId.catch(() => undefined);
+    const reservation: SessionTurnReservation = {
+      currentTurnId: null,
+      turnId,
+    };
+    this.pendingTurnReservations.push({ reservation, resolve, reject });
+    return reservation;
+  }
+
+  private cancelTurnReservation(reservation: SessionTurnReservation, reason: string): void {
+    const index = this.pendingTurnReservations.findIndex((entry) => entry.reservation === reservation);
+    if (index === -1) return;
+    const [entry] = this.pendingTurnReservations.splice(index, 1);
+    entry.reject(new Error(reason));
+  }
+
+  private clearPendingTurnReservations(reason: string): void {
+    const error = new Error(reason);
+    for (const entry of this.pendingTurnReservations.splice(0)) {
+      entry.reject(error);
+    }
+  }
+
+  private runInSendQueue<T>(operation: () => Promise<T>): Promise<T> {
+    const prior = this.sendChain.catch(() => {});
+    let release!: () => void;
+    this.sendChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return prior.then(operation).finally(() => release());
   }
 
   private buildConfig(opts: SessionOptions): Partial<SessionConfig> {
@@ -370,15 +471,27 @@ export class Session extends EventEmitter {
   }
 
   private handleEvent(e: SessionEvent): void {
-    log.debug(`[SDK event] ${e.type}:`, JSON.stringify(e.data ?? {}).slice(0, 500));
+    const now = Date.now();
+    this.sdkEventSeq += 1;
+    const sinceLastEventMs = this.lastSdkEventAt === null ? undefined : now - this.lastSdkEventAt;
+    this.lastSdkEventAt = now;
+    const eventData = (e.data as Record<string, unknown> | undefined) ?? {};
+    log.verbose('[SDK event]', ...formatLogFields({ seq: this.sdkEventSeq, sinceLastEventMs, ...summarizeSdkEvent(e.type, eventData) }));
+    log.debug(`[SDK event] ${e.type}:`, JSON.stringify(e.data ?? {}));
     const d = e.data as SessionEventData;
+    const text = String(d.deltaContent ?? d.content ?? d.text ?? '');
+    const turnId = typeof d.turnId === 'string' ? d.turnId : null;
     switch (e.type) {
-      case 'assistant.message_delta':
-        this.emit('delta', d.deltaContent ?? d.content ?? d.text ?? '');
+      case 'assistant.message_delta': {
+        this.emit('delta', text);
+        this.emit('delta_event', { turnId: this.activeTurnId, text } as SessionStreamEvent);
         break;
-      case 'assistant.reasoning_delta':
-        this.emit('thinking', d.deltaContent ?? d.content ?? d.text ?? '');
+      }
+      case 'assistant.reasoning_delta': {
+        this.emit('thinking', text);
+        this.emit('thinking_event', { turnId: this.activeTurnId, text } as SessionStreamEvent);
         break;
+      }
       case 'assistant.reasoning':
         break;
       case 'assistant.message':
@@ -389,11 +502,20 @@ export class Session extends EventEmitter {
         break;
       case 'assistant.turn_start':
         this._turnActive = true;
-        this.emit('turn_start', { turnId: d.turnId, interactionId: d.interactionId });
+        this.activeTurnId = turnId;
+        if (turnId) {
+          const pending = this.pendingTurnReservations.shift();
+          if (pending) {
+            pending.reservation.currentTurnId = turnId;
+            pending.resolve(turnId);
+          }
+        }
+        this.emit('turn_start', { turnId, interactionId: d.interactionId });
         break;
       case 'assistant.turn_end':
         this._turnActive = false;
-        this.emit('turn_end', { turnId: d.turnId });
+        if (this.activeTurnId === turnId) this.activeTurnId = null;
+        this.emit('turn_end', { turnId });
         break;
       case 'session.usage_info':
         this.emit('context_info', {
@@ -403,10 +525,11 @@ export class Session extends EventEmitter {
         });
         break;
       case 'tool.execution_start':
-        this.emit('tool_start', { toolCallId: d.toolCallId, toolName: d.name ?? d.toolName, arguments: d.arguments });
+        this.emit('tool_start', { turnId: this.activeTurnId, toolCallId: d.toolCallId, toolName: d.name ?? d.toolName, arguments: d.arguments });
         break;
       case 'tool.execution_partial_result':
         this.emit('tool_output', {
+          turnId: this.activeTurnId,
           toolCallId: d.toolCallId,
           toolName: d.name ?? d.toolName,
           content: d.result ?? d.content ?? d.text ?? '',
@@ -424,6 +547,7 @@ export class Session extends EventEmitter {
           }
         }
         this.emit('tool_complete', {
+          turnId: this.activeTurnId,
           toolCallId: d.toolCallId,
           toolName: d.name ?? d.toolName,
           success: d.exitCode === 0 || d.success !== false,
@@ -450,7 +574,7 @@ export class Session extends EventEmitter {
   }
 
   private async handlePermission(req: PermissionRequest): Promise<PermissionRequestResult> {
-    this.emit('permission_request', req);
+    this.emit('permission_request', { ...(req as Record<string, unknown>), turnId: this.activeTurnId });
     log.debug('Permission prompt (waiting for user):', req.kind);
     return new Promise<PermissionRequestResult>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -469,7 +593,7 @@ export class Session extends EventEmitter {
   }
 
   private async handleUserInput(req: UserInputRequest): Promise<{ answer: string; wasFreeform: boolean }> {
-    this.emit('user_input_request', req);
+    this.emit('user_input_request', { ...req, turnId: this.activeTurnId });
     log.debug('User input request:', req.question);
     return new Promise<{ answer: string; wasFreeform: boolean }>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -492,51 +616,73 @@ export class Session extends EventEmitter {
 
   // ── Core ──
 
-  async send(prompt: string, attachments?: FileAttachment[]): Promise<CopilotMessage> {
+  async send(prompt: string, attachments?: FileAttachment[], reservation = this.reserveTurn()): Promise<CopilotMessage> {
     if (!this._alive) throw new Error('Session not started');
 
-    let onDelta: ((t: string) => void) | null = null;
-    let errorHandler: ((msg: string) => void) | null = null;
+    return this.runInSendQueue(async () => {
+      let onDelta: ((event: SessionStreamEvent) => void) | null = null;
+      let errorHandler: ((msg: string) => void) | null = null;
 
-    try {
-      let text = '';
-      onDelta = (t: string) => {
-        text += t;
-      };
-      this.on('delta', onDelta);
+      try {
+        let text = '';
+        onDelta = (event: SessionStreamEvent) => {
+          if (!reservation.currentTurnId || event.turnId !== reservation.currentTurnId) return;
+          text += event.text;
+        };
+        this.on('delta_event', onDelta);
 
-      // Reject if session emits an error (e.g. auth failure)
-      const errorPromise = new Promise<never>((_, rej) => {
-        errorHandler = (msg: string) => rej(new Error(msg));
-        this.once('error', errorHandler);
-      });
+        // Reject if session emits an error (e.g. auth failure)
+        const errorPromise = new Promise<never>((_, rej) => {
+          errorHandler = (msg: string) => rej(new Error(msg));
+          this.once('error', errorHandler);
+        });
 
-      const sendOpts: MessageOptions = { prompt };
-      // SDK default mode is 'enqueue' which handles FIFO queueing natively
-      if (this._messageMode) sendOpts.mode = this._messageMode;
-      if (attachments?.length) sendOpts.attachments = attachments;
+        const sendOpts: MessageOptions = { prompt };
+        // Keep SDK queue mode for compatibility, but serialize locally so per-turn listeners stay isolated.
+        if (this._messageMode) sendOpts.mode = this._messageMode;
+        if (attachments?.length) sendOpts.attachments = attachments;
 
-      const result = await Promise.race([
-        this.session!.sendAndWait(sendOpts),
-        errorPromise,
-      ]);
-      log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
+          log.verbose(
+            '[SDK sendAndWait:start]',
+            ...formatLogFields({
+              sessionId: this.sessionId,
+              mode: sendOpts.mode ?? 'default',
+              attachments: attachments?.length ?? 0,
+              promptChars: prompt.length,
+            }),
+          );
 
-      const resultObj = result as Record<string, unknown>;
-      const resultData = (resultObj?.data as Record<string, unknown>) ?? {};
+        const result = await Promise.race([
+          this.session!.sendAndWait(sendOpts),
+          errorPromise,
+        ]);
+          const resultContent = (result as { data?: { content?: string }; content?: string } | undefined)?.data?.content
+            ?? (result as { content?: string } | undefined)?.content
+            ?? '';
+          log.verbose('[SDK sendAndWait:done]', ...formatLogFields({ sessionId: this.sessionId, resultChars: resultContent.length || undefined }));
+          log.debug('sendAndWait result:', JSON.stringify(result));
 
-      return {
-        content:
-          text.trim() ||
-          (typeof resultData?.content === 'string' ? resultData.content : '') ||
-          (typeof resultObj?.content === 'string' ? resultObj.content : '') ||
-          (typeof result === 'string' ? result : '') ||
-          '_(no response)_',
-      };
-    } finally {
-      if (onDelta) this.off('delta', onDelta);
-      if (errorHandler) this.off('error', errorHandler);
-    }
+        const resultObj = result as Record<string, unknown>;
+        const resultData = (resultObj?.data as Record<string, unknown>) ?? {};
+
+        return {
+          content:
+            text.trim() ||
+            (typeof resultData?.content === 'string' ? resultData.content : '') ||
+            (typeof resultObj?.content === 'string' ? resultObj.content : '') ||
+            (typeof result === 'string' ? result : '') ||
+            '_(no response)_',
+        };
+      } catch (error) {
+        if (!reservation.currentTurnId) {
+          this.cancelTurnReservation(reservation, error instanceof Error ? error.message : String(error));
+        }
+        throw error;
+      } finally {
+        if (onDelta) this.off('delta_event', onDelta);
+        if (errorHandler) this.off('error', errorHandler);
+      }
+    });
   }
 
   /** Send with mode: 'immediate' to steer the agent mid-turn (bypasses queue) */
@@ -638,6 +784,8 @@ export class Session extends EventEmitter {
     // Disconnect but preserve session data on disk for resume
     this._alive = false;
     this._turnActive = false;
+    this.activeTurnId = null;
+    this.clearPendingTurnReservations('Session disconnected');
     try {
       await this.session?.disconnect();
     } catch {
@@ -678,6 +826,8 @@ export class Session extends EventEmitter {
   async kill() {
     this._alive = false;
     this._turnActive = false;
+    this.activeTurnId = null;
+    this.clearPendingTurnReservations('Session killed');
     try {
       await this.session?.disconnect();
     } catch {

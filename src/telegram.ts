@@ -6,21 +6,23 @@ import { autoRetry } from '@grammyjs/auto-retry';
 import { hydrate, type HydrateFlavor } from '@grammyjs/hydrate';
 import { hydrateFiles, type FileFlavor } from '@grammyjs/files';
 import type { Transformer } from 'grammy';
+import type { Update } from 'grammy/types';
 import { markdownToHtml, markdownToText, markdownToTelegramChunks } from './format.js';
 import { toTelegramReaction } from './emoji.js';
 import { log } from './log.js';
 import type { Client, MessageOptions, Button } from './client.js';
+import {
+  formatLogFields,
+  summarizeTelegramApiCall,
+  summarizeTelegramApiResult,
+  summarizeTelegramUpdate,
+  summarizeTextForLog,
+} from './transport-log.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const DRAFT_ID_MAX = 2_147_483_647;
 const DRAFT_REQUEST_TIMEOUT_MS = 1200;
 let nextDraftId = 0;
-
-function summarizeTextForLog(value: string | undefined, max = 160): string {
-  const normalized = (value ?? '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return '<empty>';
-  return normalized.length > max ? normalized.slice(0, max) + '…' : normalized;
-}
 
 type MyContext = HydrateFlavor<FileFlavor<Context>>;
 
@@ -39,6 +41,7 @@ export class TelegramClient implements Client {
   private pairedUser: string | null = null;
   private topicNames = new Map<string, string>();
   private msgThreadMap = new Map<number, number>(); // msgId → threadId for callback resolution
+  private updateSeq = 0;
 
   // Event handlers (set by bridge consumer)
   onMessage?: Client['onMessage'];
@@ -65,7 +68,32 @@ export class TelegramClient implements Client {
       }
       return prev(method, payload, signal);
     };
+    const apiLogger: Transformer = async (prev, method, payload, signal) => {
+      const normalizedPayload = (payload ?? {}) as Record<string, unknown>;
+      const startedAt = Date.now();
+      const txSummary = summarizeTelegramApiCall(method, normalizedPayload);
+      log.verbose('[Telegram API TX]', ...formatLogFields(txSummary));
+      if (log.shouldLog('debug')) {
+        log.debug('[Telegram API TX RAW]', `method=${method}`, `payload=${JSON.stringify(normalizedPayload)}`);
+      }
+      try {
+        const result = await prev(method, payload, signal);
+        const rxSummary = summarizeTelegramApiResult(method, (result as { result?: unknown })?.result ?? result);
+        log.verbose('[Telegram API RX]', ...formatLogFields({ ...rxSummary, ms: Date.now() - startedAt }));
+        if (log.shouldLog('debug')) {
+          log.debug('[Telegram API RX RAW]', `method=${method}`, `result=${JSON.stringify(result)}`);
+        }
+        return result;
+      } catch (error) {
+        log.warn(
+          '[Telegram API ERR]',
+          ...formatLogFields({ ...txSummary, ms: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) }),
+        );
+        throw error;
+      }
+    };
     this.bot.api.config.use(defaultParseMode);
+    this.bot.api.config.use(apiLogger);
     this.bot.api.config.use(hydrateFiles(config.botToken));
     this.bot.use(hydrate());
 
@@ -99,6 +127,17 @@ export class TelegramClient implements Client {
 
   private setupHandlers(): void {
     // Auth middleware
+    this.bot.use(async (ctx, next) => {
+      const update = ctx.update as Update;
+      this.updateSeq += 1;
+      const summary = summarizeTelegramUpdate(update);
+      log.verbose('[Telegram UPDATE]', ...formatLogFields({ seq: this.updateSeq, ...summary }));
+      if (log.shouldLog('debug')) {
+        log.debug('[Telegram UPDATE RAW]', `seq=${this.updateSeq}`, `payload=${JSON.stringify(update)}`);
+      }
+      await next();
+    });
+
     this.bot.use(async (ctx, next) => {
       if (!this.isAllowed(ctx.from?.id)) {
         if (ctx.chat?.type === 'private') {
@@ -447,6 +486,11 @@ export class TelegramClient implements Client {
       };
       if (opts?.threadId) params.message_thread_id = opts.threadId;
       if (opts?.replyTo) params.reply_parameters = { message_id: opts.replyTo, allow_sending_without_reply: true };
+      log.verbose('[Telegram API TX]', ...formatLogFields({ ...summarizeTelegramApiCall('sendMessageDraft', params), transport: 'fetch' }));
+      if (log.shouldLog('debug')) {
+        log.debug('[Telegram API TX RAW]', 'method=sendMessageDraft', `payload=${JSON.stringify(params)}`);
+      }
+      const startedAt = Date.now();
       const resp = await fetch(
         `https://api.telegram.org/bot${this.config.botToken}/sendMessageDraft`,
         {
@@ -458,9 +502,14 @@ export class TelegramClient implements Client {
       );
       const json = (await resp.json()) as { ok?: boolean; description?: string };
       if (!json.ok) throw new Error(json.description ?? 'sendMessageDraft failed');
+      log.verbose('[Telegram API RX]', ...formatLogFields({ method: 'sendMessageDraft', ok: true, ms: Date.now() - startedAt }));
+      if (log.shouldLog('debug')) {
+        log.debug('[Telegram API RX RAW]', 'method=sendMessageDraft', `result=${JSON.stringify(json)}`);
+      }
       return true;
     } catch (e) {
       const msg = String(e);
+      log.warn('[Telegram API ERR]', ...formatLogFields({ method: 'sendMessageDraft', chat: chatId, draftId, error: msg }));
       log.debug('sendMessageDraft failed:', msg);
       if (/unknown method|not (found|available|supported)|can't be used|can be used only|PEER_INVALID/i.test(msg)) {
         this.draftDisabledChats.add(chatId); // disable for THIS chat only
