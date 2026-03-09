@@ -128,7 +128,12 @@ function resolveGhToken(): string | undefined {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  if (config._file?.debug) log.setDebug(true);
+  const configuredLogLevel = config._file?.logging?.level ?? config._file?.logLevel;
+  if (configuredLogLevel) {
+    log.setLevel(configuredLogLevel);
+  } else if (config._file?.debug) {
+    log.setDebug(true);
+  }
   const botToken = config.fakeTelegram ? 'mock-telegram-token' : await ensureBotToken(config);
   const bin = config.copilotBinary ?? findBin('copilot');
 
@@ -140,6 +145,7 @@ async function main(): Promise<void> {
     (config.fakeTelegram ? ' | transport: mock-telegram-harness' : '') +
     (config.cliUrl ? ' | cli: ' + config.cliUrl : ' | cli: stdio'),
   );
+  log.info('[logger] level=' + log.getLevel());
 
   const client: Client = config.fakeTelegram
     ? new MockTelegramHarness()
@@ -526,6 +532,13 @@ async function main(): Promise<void> {
 
   // ── Prompt handler (streaming + reactions) ──
   async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
+    log.info(
+      '[prompt:start]',
+      `chat=${chatId}`,
+      `msg=${msgId}`,
+      `attachments=${attachments?.length ?? 0}`,
+      `text=${JSON.stringify(prompt.replace(/\s+/g, ' ').trim().slice(0, 200))}`,
+    );
     const turnStartedAt = performance.now();
     const responseMessageOpts: MessageOptions = { disableLinkPreview: true, replyTo: msgId };
     let typingFails = 0;
@@ -885,6 +898,7 @@ async function main(): Promise<void> {
     try {
       res = await session.send(prompt, attachments);
     } catch (sendErr) {
+      log.error('[prompt:error]', sendErr);
       cleanup();
       if (typingInterval) clearInterval(typingInterval);
       // Kill the broken session so it doesn't linger
@@ -926,6 +940,7 @@ async function main(): Promise<void> {
         `ttfv=${firstVisibleAt === null ? '-' : Math.round(firstVisibleAt - turnStartedAt) + 'ms'}`,
         `tgApi=${telegramApiCalls}(${Math.round(telegramApiMs)}ms)`,
       );
+      log.info('[prompt:done]', `chat=${chatId}`, `msg=${msgId}`, `responseChars=${final.length}`);
     } catch (err) {
       log.error('[finalize] error:', err);
       cleanup();

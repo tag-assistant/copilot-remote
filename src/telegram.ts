@@ -16,6 +16,12 @@ const DRAFT_ID_MAX = 2_147_483_647;
 const DRAFT_REQUEST_TIMEOUT_MS = 1200;
 let nextDraftId = 0;
 
+function summarizeTextForLog(value: string | undefined, max = 160): string {
+  const normalized = (value ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '<empty>';
+  return normalized.length > max ? normalized.slice(0, max) + '…' : normalized;
+}
+
 type MyContext = HydrateFlavor<FileFlavor<Context>>;
 
 export interface TelegramConfig {
@@ -85,7 +91,7 @@ export class TelegramClient implements Client {
     const id = String(userId);
     if (!this.pairedUser) {
       this.pairedUser = id;
-      console.log('[Telegram] Auto-paired with user ' + id);
+      log.info('[Telegram] Auto-paired with user ' + id);
       return true;
     }
     return id === this.pairedUser;
@@ -114,6 +120,15 @@ export class TelegramClient implements Client {
         }
       }
 
+      log.info(
+        '[Telegram RX]',
+        `chat=${ctx.chatId}`,
+        `msg=${ctx.message.message_id}`,
+        `thread=${threadId ?? '-'}`,
+        `replyTo=${ctx.message.reply_to_message?.message_id ?? '-'}`,
+        `text=${JSON.stringify(summarizeTextForLog(ctx.message.text))}`,
+      );
+
       // Do NOT await — let handlePrompt run in background so other updates process immediately
       void this.onMessage?.(
         ctx.message.text,
@@ -132,6 +147,14 @@ export class TelegramClient implements Client {
         msg.voice?.file_id ?? msg.audio?.file_id ?? msg.document?.file_id ?? msg.photo?.[msg.photo.length - 1]?.file_id;
       const fileName = msg.document?.file_name ?? msg.audio?.file_name ?? (msg.voice ? 'voice.oga' : 'photo.jpg');
       const caption = msg.caption ?? '';
+      log.info(
+        '[Telegram RX FILE]',
+        `chat=${ctx.chatId}`,
+        `msg=${msg.message_id}`,
+        `thread=${msg.message_thread_id ?? '-'}`,
+        `file=${JSON.stringify(fileName)}`,
+        `caption=${JSON.stringify(summarizeTextForLog(caption))}`,
+      );
       if (fileId) {
         this.onFile?.(fileId, fileName, caption, String(ctx.chatId), msg.message_id, msg.message_thread_id);
       }
@@ -143,6 +166,13 @@ export class TelegramClient implements Client {
       const emoji = sticker.emoji ?? '';
       const desc = emoji ? `[Sticker: ${emoji}]` : '[Sticker]';
       const threadId = ctx.message.message_thread_id;
+      log.info(
+        '[Telegram RX STICKER]',
+        `chat=${ctx.chatId}`,
+        `msg=${ctx.message.message_id}`,
+        `thread=${threadId ?? '-'}`,
+        `emoji=${JSON.stringify(emoji || '<none>')}`,
+      );
       this.onMessage?.(desc, String(ctx.chatId), ctx.message.message_id, undefined, undefined, threadId);
     });
 
@@ -154,6 +184,14 @@ export class TelegramClient implements Client {
       const fileId = video.file_id;
       const fileName = (msg.video as { file_name?: string })?.file_name ?? 'video.mp4';
       const caption = (msg as { caption?: string }).caption ?? '';
+      log.info(
+        '[Telegram RX VIDEO]',
+        `chat=${ctx.chatId}`,
+        `msg=${msg.message_id}`,
+        `thread=${msg.message_thread_id ?? '-'}`,
+        `file=${JSON.stringify(fileName)}`,
+        `caption=${JSON.stringify(summarizeTextForLog(caption))}`,
+      );
       this.onFile?.(fileId, fileName, caption, String(ctx.chatId), msg.message_id, msg.message_thread_id);
     });
 
@@ -162,6 +200,14 @@ export class TelegramClient implements Client {
       const loc = ctx.message.location;
       const text = `User shared location: ${loc.latitude}, ${loc.longitude}`;
       const threadId = ctx.message.message_thread_id;
+      log.info(
+        '[Telegram RX LOCATION]',
+        `chat=${ctx.chatId}`,
+        `msg=${ctx.message.message_id}`,
+        `thread=${threadId ?? '-'}`,
+        `lat=${loc.latitude}`,
+        `lon=${loc.longitude}`,
+      );
       this.onMessage?.(text, String(ctx.chatId), ctx.message.message_id, undefined, undefined, threadId);
     });
 
@@ -236,9 +282,9 @@ export class TelegramClient implements Client {
       .catch(() => {});
 
     if (this.pairedUser) {
-      console.log('[Telegram] Polling started — paired with user ' + this.pairedUser);
+      log.info('[Telegram] Polling started — paired with user ' + this.pairedUser);
     } else {
-      console.log('[Telegram] Polling started — waiting for first user to pair');
+      log.info('[Telegram] Polling started — waiting for first user to pair');
     }
 
     // Drop any stale getUpdates connections from previous instances
@@ -267,7 +313,7 @@ export class TelegramClient implements Client {
       } catch (err) {
         const is409 = err instanceof GrammyError && err.error_code === 409;
         if (!is409 || attempt >= MAX_RETRIES) throw err;
-        console.log(`[Telegram] Got 409 conflict (attempt ${attempt}/${MAX_RETRIES}), retrying in ${RETRY_DELAY / 1000}s...`);
+        log.warn(`[Telegram] Got 409 conflict (attempt ${attempt}/${MAX_RETRIES}), retrying in ${RETRY_DELAY / 1000}s...`);
         await new Promise(r => setTimeout(r, RETRY_DELAY));
       }
     }
@@ -282,6 +328,13 @@ export class TelegramClient implements Client {
   // ── Messaging (HTML with plain text fallback) ──
 
   async sendMessage(chatId: string, text: string, opts?: MessageOptions): Promise<number | null> {
+    log.info(
+      '[Telegram TX]',
+      `chat=${chatId}`,
+      `thread=${opts?.threadId ?? '-'}`,
+      `replyTo=${opts?.replyTo ?? '-'}`,
+      `text=${JSON.stringify(summarizeTextForLog(text))}`,
+    );
     // Split at the markdown IR level to avoid breaking mid-HTML tag.
     // Ported from OpenClaw's renderTelegramChunksWithinHtmlLimit (MIT).
     const chunks = markdownToTelegramChunks(text, MAX_MESSAGE_LENGTH);
@@ -316,11 +369,13 @@ export class TelegramClient implements Client {
         }
       }
     }
+    log.info('[Telegram TX DONE]', `chat=${chatId}`, `msg=${lastMsgId ?? '-'}`);
     if (lastMsgId && opts?.threadId) this.msgThreadMap.set(lastMsgId, opts.threadId);
     return lastMsgId;
   }
 
   async editMessage(chatId: string, msgId: number, text: string): Promise<void> {
+    log.info('[Telegram TX EDIT]', `chat=${chatId}`, `msg=${msgId}`, `text=${JSON.stringify(summarizeTextForLog(text))}`);
     // Render to HTML first, then check length. If too long, truncate at IR level.
     const chunks = markdownToTelegramChunks(text, MAX_MESSAGE_LENGTH);
     const chunk = chunks[0]; // edit can only update one message — use first chunk
@@ -344,6 +399,7 @@ export class TelegramClient implements Client {
   /** Lightweight edit for streaming — sends plain text, skips markdown→HTML pipeline. */
   async editMessageRaw(chatId: string, msgId: number, text: string): Promise<void> {
     const truncated = text.length > MAX_MESSAGE_LENGTH ? text.slice(0, MAX_MESSAGE_LENGTH - 4) + ' ...' : text;
+    log.info('[Telegram TX EDIT RAW]', `chat=${chatId}`, `msg=${msgId}`, `text=${JSON.stringify(summarizeTextForLog(truncated))}`);
     try {
       await this.raw['editMessageText']({
         chat_id: chatId, message_id: msgId, text: truncated, parse_mode: undefined,

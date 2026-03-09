@@ -437,6 +437,7 @@ export class Session extends EventEmitter {
         // and waits for the response. Emitting from both causes duplicate prompts.
         break;
       case 'session.idle':
+        log.info('[SDK idle]', JSON.stringify(d));
         this.emit('idle');
         break;
       case 'session.title_changed':

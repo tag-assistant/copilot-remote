@@ -34,6 +34,11 @@ export interface ChatConfig {
 export interface GlobalConfig {
   cliUrl?: string;
   provider?: RemoteProviderConfig;
+  logLevel?: string;
+  logging?: {
+    level?: string;
+  };
+  debug?: boolean;
   mcpServers?: Record<string, MCPServerConfig>;
   customAgents?: unknown[];
   skillDirectories?: string[];
