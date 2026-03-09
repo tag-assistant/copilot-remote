@@ -132,8 +132,10 @@ async function main(): Promise<void> {
   const botToken = config.fakeTelegram ? 'mock-telegram-token' : await ensureBotToken(config);
   const bin = config.copilotBinary ?? findBin('copilot');
 
+  const selfDev = config._file?.selfDevelopment?.enabled === true;
   log.info(
-    '🚀 Copilot Remote v' + version + ' (self-dev enabled)' +
+    '🚀 Copilot Remote v' + version +
+    (selfDev ? ' (self-dev enabled)' : '') +
     ' | dir: ' + config.workDir +
     (config.fakeTelegram ? ' | transport: mock-telegram-harness' : '') +
     (config.cliUrl ? ' | cli: ' + config.cliUrl : ' | cli: stdio'),
@@ -465,6 +467,7 @@ async function main(): Promise<void> {
       excludedTools: [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])].length
         ? [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])]
         : undefined,
+      idleTimeoutMs: globalCfg.idleTimeoutMinutes != null ? globalCfg.idleTimeoutMinutes * 60_000 : undefined,
     };
 
     // Try to resume an existing session, preferring the deterministic Telegram-derived ID.

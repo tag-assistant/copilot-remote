@@ -41,6 +41,8 @@ export interface GlobalConfig {
   systemInstructions?: string;
   availableTools?: string[];
   excludedTools?: string[];
+  /** Idle timeout in minutes — kills turn if no SDK events. 0 = disabled. Default: 15 */
+  idleTimeoutMinutes?: number;
   selfDevelopment?: {
     enabled?: boolean;
     autoRestart?: boolean;
