@@ -126,7 +126,7 @@ async function main(): Promise<void> {
   const bin = config.copilotBinary ?? findBin('copilot');
 
   log.info(
-    '⚡ Copilot Remote v' + version +
+    '🚀 Copilot Remote v' + version + ' (self-dev enabled)' +
     ' | dir: ' + config.workDir +
     (config.fakeTelegram ? ' | transport: mock-telegram-harness' : '') +
     (config.cliUrl ? ' | cli: ' + config.cliUrl : ' | cli: stdio'),
@@ -1064,7 +1064,7 @@ async function main(): Promise<void> {
       case '/status': {
         const s = sessions.get(chatId);
         if (!s?.alive) {
-          await client.sendMessage(chatId, '⚪ No session. Send a message to start.');
+          await client.sendMessage(chatId, '⚪ No active session — send a message to start one!');
           break;
         }
         const dir = workDir(chatId);
