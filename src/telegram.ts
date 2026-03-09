@@ -241,19 +241,36 @@ export class TelegramClient implements Client {
       console.log('[Telegram] Polling started — waiting for first user to pair');
     }
 
-    this.runner = run(this.bot, {
-      runner: {
-        fetch: {
-          allowed_updates: ['message', 'callback_query', 'message_reaction', 'inline_query'],
+    // Drop any stale getUpdates connections from previous instances
+    await this.bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
+
+    // Retry loop: grammY treats 409 (stale getUpdates from previous instance) as unrecoverable.
+    // On tsx watch restarts or daemon respawns, the old long-poll may still be in-flight for up to 30s.
+    const MAX_RETRIES = 6;
+    const RETRY_DELAY = 5_000;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      this.runner = run(this.bot, {
+        runner: {
+          fetch: {
+            allowed_updates: ['message', 'callback_query', 'message_reaction', 'inline_query'],
+          },
         },
-      },
-    });
+      });
 
     // Set profile photo if configured
     const photoPath = this.config.profilePhoto;
     if (photoPath) this.setMyProfilePhoto(photoPath).catch(() => {});
 
-    await this.runner.task();
+      try {
+        await this.runner.task();
+        return; // Clean exit
+      } catch (err) {
+        const is409 = err instanceof GrammyError && err.error_code === 409;
+        if (!is409 || attempt >= MAX_RETRIES) throw err;
+        console.log(`[Telegram] Got 409 conflict (attempt ${attempt}/${MAX_RETRIES}), retrying in ${RETRY_DELAY / 1000}s...`);
+        await new Promise(r => setTimeout(r, RETRY_DELAY));
+      }
+    }
   }
 
   stop(): void {
