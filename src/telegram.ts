@@ -376,11 +376,6 @@ export class TelegramClient implements Client {
 
   async sendDraft(chatId: string, draftId: number, text: string, threadId?: number): Promise<boolean> {
     if (this.draftDisabledChats.has(chatId)) return false;
-    // Drafts only work in DMs — skip supergroups immediately
-    if (chatId.startsWith('-')) {
-      this.draftDisabledChats.add(chatId);
-      return false;
-    }
     try {
       const params: Record<string, unknown> = {
         chat_id: chatId,

@@ -442,20 +442,88 @@ async function main(): Promise<void> {
 
   // ── Prompt handler (streaming + reactions) ──
   async function handlePrompt(chatId: string, msgId: number, prompt: string, attachments?: FileAttachment[]): Promise<void> {
+    const turnStartedAt = performance.now();
     // Show typing immediately — session creation can take seconds
     client.sendTyping(chatId);
+    const c = cfg(chatId);
+    let streamMsgId: number | null = null;
+    let draftId: number | null = null;
+    let useDraft = !!client.sendDraft; // try draft mode if client supports it
+    let thinkingText = '',
+      responseText = '';
+    let intentText = '';
+    const toolLines: string[] = [];
+    let activeToolStatus = 'Connecting to Copilot…';
+    let lastEdit = 0,
+      timer: NodeJS.Timeout | null = null;
+    const THROTTLE = useDraft ? 120 : 180; // keep updates snappy without spamming Telegram
+    let sendingFirst = false; // mutex: prevent duplicate first-message sends
+    let placeholderPrimed = false;
+    let sessionReadyAt: number | null = null;
+    let firstDeltaAt: number | null = null;
+    let firstVisibleAt: number | null = null;
+    let telegramApiCalls = 0;
+    let telegramApiMs = 0;
+
+    const noteTelegramCall = (startedAt: number) => {
+      telegramApiCalls++;
+      telegramApiMs += performance.now() - startedAt;
+      if (firstVisibleAt === null) firstVisibleAt = performance.now();
+    };
+
+    const display = () => {
+      const p: string[] = [];
+      if (intentText) p.push('🎯 *' + intentText + '*');
+      if (thinkingText && c.showThinking) {
+        const italicLines = thinkingText.trim().split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
+        p.push('Reasoning:\n' + italicLines);
+      }
+      if (toolLines.length) p.push(toolLines.join('\n'));
+      if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
+      if (responseText) p.push(responseText);
+      return p.join('\n\n');
+    };
+
+    const primeStreamSurface = async () => {
+      if (placeholderPrimed) return;
+      const text = display();
+      if (!text.trim()) return;
+      placeholderPrimed = true;
+
+      if (useDraft && client.sendDraft) {
+        if (!draftId) draftId = client.allocateDraftId!();
+        const tgStart = performance.now();
+        const ok = await client.sendDraft(chatId, draftId, text);
+        noteTelegramCall(tgStart);
+        if (ok) {
+          log.debug('Stream: primed draft', draftId, 'for', chatId);
+          return;
+        }
+        useDraft = false;
+      }
+
+      const tgStart = performance.now();
+      streamMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
+      noteTelegramCall(tgStart);
+      log.debug('Stream: primed message', streamMsgId, 'for', chatId);
+    };
+
     let session: Session;
     try {
+      if (!sessions.get(chatId)?.alive) {
+        await primeStreamSurface();
+      }
       session = await getSession(chatId);
+      sessionReadyAt = performance.now();
     } catch (err: unknown) {
       const msg = (err as Error)?.message ?? String(err);
       // If reasoning effort not supported, retry without it
       if (msg.includes('reasoning effort')) {
-        const c = cfg(chatId);
         c.reasoningEffort = '';
         setCfg(chatId, c);
         try {
           session = await getSession(chatId);
+          sessionReadyAt = performance.now();
         } catch (err2: unknown) {
           await client.sendMessage(chatId, '❌ Session failed: ' + ((err2 as Error)?.message ?? String(err2)));
           return;
@@ -465,7 +533,6 @@ async function main(): Promise<void> {
         return;
       }
     }
-    const c = cfg(chatId);
     // Keep relay semantics simple: queue by default, and only steer an in-flight turn
     // when the user explicitly opts into immediate mode.
     if (session.busy && c.messageMode === 'immediate') {
@@ -481,6 +548,8 @@ async function main(): Promise<void> {
       return;
     }
     client.sendTyping(chatId);
+    activeToolStatus = 'Waiting for Copilot…';
+    await primeStreamSurface();
     const react = c.showReactions ? (e: string) => { client.setReaction(chatId, msgId, e).then(() => sendTypingSafe()).catch(() => {}); } : () => {};
     react(LIFECYCLE_REACTIONS.received);
     // Typing keepalive — same pattern as OpenClaw: 3s interval + TTL safety + failure guard
@@ -493,38 +562,10 @@ async function main(): Promise<void> {
     sendTypingSafe();
     const typingInterval = setInterval(() => sendTypingSafe(), 3000);
 
-    let streamMsgId: number | null = null;
-    let draftId: number | null = null;
-    let useDraft = !!client.sendDraft; // try draft mode if client supports it
-    let thinkingText = '',
-      responseText = '';
-    let intentText = '';
-    const toolLines: string[] = [];
-    let activeToolStatus = ''; // current tool being executed (always shown)
-    let lastEdit = 0,
-      timer: NodeJS.Timeout | null = null;
-    const THROTTLE = useDraft ? 200 : 300; // apiThrottler + autoRetry handle rate limits; keep fast
-
-    const display = () => {
-      const p: string[] = [];
-      if (intentText) p.push('🎯 *' + intentText + '*');
-      if (thinkingText && c.showThinking) {
-        // Match OpenClaw: per-line italic wrapping with "Reasoning:" header
-        const italicLines = thinkingText.trim().split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
-        p.push('Reasoning:\n' + italicLines);
-      }
-      if (toolLines.length) p.push(toolLines.join('\n'));
-      if (activeToolStatus && !responseText) p.push('⏳ ' + activeToolStatus);
-      if (responseText) p.push(responseText);
-      return p.join('\n\n');
-    };
-
     // Minimum chars before sending first streaming message.
     // Prevents premature push notifications (user sees "I" before the full sentence).
     // Pattern adapted from OpenClaw's DRAFT_MIN_INITIAL_CHARS (MIT, github.com/AustenStone/openclaw)
     const MIN_INITIAL_CHARS = 1;
-
-    let sendingFirst = false; // mutex: prevent duplicate first-message sends
 
     const flush = async () => {
       timer = null;
@@ -536,7 +577,9 @@ async function main(): Promise<void> {
       // Try native draft streaming first
       if (useDraft && client.sendDraft) {
         if (!draftId) draftId = client.allocateDraftId!();
+        const tgStart = performance.now();
         const ok = await client.sendDraft(chatId, draftId, text);
+        noteTelegramCall(tgStart);
         if (ok) return;
         useDraft = false; // fall back to edit-in-place
       }
@@ -547,7 +590,9 @@ async function main(): Promise<void> {
         if (text.length < MIN_INITIAL_CHARS) { log.debug('[flush] text too short:', text.length); return; }
         sendingFirst = true;
         log.debug('[flush] sending first message, text:', text.length);
+        const tgStart = performance.now();
         const newMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
+        noteTelegramCall(tgStart);
         log.debug('[flush] sendMessage returned:', newMsgId);
         sendingFirst = false;
         streamMsgId = newMsgId;
@@ -557,10 +602,12 @@ async function main(): Promise<void> {
         // Use raw edit (plain text, no markdown→HTML) for streaming — fast path
         const [cid] = resolveKey(chatId);
         const tc = client as unknown as { editMessageRaw?: (c: string, m: number, t: string) => Promise<void> };
+        const tgStart = performance.now();
         const editPromise = tc.editMessageRaw
           ? tc.editMessageRaw.call(client, cid, streamMsgId, text)
           : client.editMessage(chatId, streamMsgId, text);
         editPromise.then(() => {
+          noteTelegramCall(tgStart);
           sendTypingSafe();
         }).catch((e) => { log.debug('Stream edit failed:', e); });
       }
@@ -571,6 +618,7 @@ async function main(): Promise<void> {
     };
 
     const onThink = (t: string) => {
+      if (firstDeltaAt === null) firstDeltaAt = performance.now();
       if (!c.showThinking) return;
       if (!thinkingText) react(LIFECYCLE_REACTIONS.thinking);
       thinkingText += t;
@@ -578,6 +626,7 @@ async function main(): Promise<void> {
     };
 
     const onDelta = (t: string) => {
+      if (firstDeltaAt === null) firstDeltaAt = performance.now();
       if (thinkingText) {
         thinkingText = '';
       }
@@ -748,17 +797,31 @@ async function main(): Promise<void> {
       if (streamMsgId && chunks.length <= 1) {
         // Single chunk — edit the existing stream message in-place (materialize)
         log.debug('[finalize] materialize edit msgId:', streamMsgId);
+        const tgStart = performance.now();
         await client.editMessage(chatId, streamMsgId, final);
+        noteTelegramCall(tgStart);
       } else if (streamMsgId) {
         // Multi-chunk — must delete stream msg and send fresh (can't edit into multiple messages)
         log.debug('[finalize] multi-chunk: delete + resend');
         await client.deleteMessage?.(chatId, streamMsgId).catch(() => {});
+        const tgStart = performance.now();
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
+        noteTelegramCall(tgStart);
       } else {
         log.debug('[finalize] no streamMsgId, sending fresh');
+        const tgStart = performance.now();
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
+        noteTelegramCall(tgStart);
       }
       react(LIFECYCLE_REACTIONS.complete);
+      log.info(
+        '[perf]',
+        `total=${Math.round(performance.now() - turnStartedAt)}ms`,
+        `session=${Math.round((sessionReadyAt ?? turnStartedAt) - turnStartedAt)}ms`,
+        `ttfd=${firstDeltaAt === null ? '-' : Math.round(firstDeltaAt - turnStartedAt) + 'ms'}`,
+        `ttfv=${firstVisibleAt === null ? '-' : Math.round(firstVisibleAt - turnStartedAt) + 'ms'}`,
+        `tgApi=${telegramApiCalls}(${Math.round(telegramApiMs)}ms)`,
+      );
     } catch (err) {
       log.error('[finalize] error:', err);
       cleanup();
