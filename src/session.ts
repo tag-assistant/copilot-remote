@@ -227,20 +227,17 @@ export class Session extends EventEmitter {
   private client: CopilotClient | null = null;
   private session: SDKSession | null = null;
   private _alive = false;
-  private _busy = false;
+  private _turnActive = false;
   private _autopilot = false;
   private _messageMode: 'enqueue' | 'immediate' | undefined = undefined;
   private cwd = '';
 
-  // Message queue for sequential processing
-  private queue: { prompt: string; attachments?: FileAttachment[]; resolve: (msg: CopilotMessage) => void; reject: (err: Error) => void }[] = [];
-  private processing = false;
-
   get alive() {
     return this._alive;
   }
+  /** Whether a turn is currently in progress (driven by SDK turn_start/turn_end events) */
   get busy() {
-    return this._busy;
+    return this._turnActive;
   }
   get sessionId() {
     return this.session?.sessionId ?? null;
@@ -391,9 +388,11 @@ export class Session extends EventEmitter {
         this.emit('usage', d);
         break;
       case 'assistant.turn_start':
+        this._turnActive = true;
         this.emit('turn_start', { turnId: d.turnId, interactionId: d.interactionId });
         break;
       case 'assistant.turn_end':
+        this._turnActive = false;
         this.emit('turn_end', { turnId: d.turnId });
         break;
       case 'session.usage_info':
@@ -494,26 +493,6 @@ export class Session extends EventEmitter {
 
   async send(prompt: string, attachments?: FileAttachment[]): Promise<CopilotMessage> {
     if (!this._alive) throw new Error('Session not started');
-    return new Promise((resolve, reject) => {
-      this.queue.push({ prompt, attachments, resolve, reject });
-      this.processQueue();
-    });
-  }
-
-  /** Send with mode: 'immediate' to steer the agent mid-turn (bypasses queue) */
-  async sendImmediate(prompt: string, attachments?: FileAttachment[]): Promise<void> {
-    if (!this._alive) throw new Error('Session not started');
-    const opts: MessageOptions = { prompt, mode: 'immediate' };
-    if (attachments?.length) opts.attachments = attachments;
-    // Fire-and-forget: immediate messages steer the current turn, no separate response
-    await this.session!.send(opts);
-  }
-
-  private async processQueue(): Promise<void> {
-    if (this.processing || !this.queue.length) return;
-    this.processing = true;
-    this._busy = true;
-    const { prompt, attachments, resolve, reject } = this.queue.shift()!;
 
     let onDelta: ((t: string) => void) | null = null;
     let errorHandler: ((msg: string) => void) | null = null;
@@ -532,38 +511,40 @@ export class Session extends EventEmitter {
       });
 
       const sendOpts: MessageOptions = { prompt };
+      // SDK default mode is 'enqueue' which handles FIFO queueing natively
       if (this._messageMode) sendOpts.mode = this._messageMode;
       if (attachments?.length) sendOpts.attachments = attachments;
 
-      let result;
-      try {
-        result = await Promise.race([
-          this.session!.sendAndWait(sendOpts),
-          errorPromise,
-        ]);
-      } finally { /* no cleanup needed */ }
+      const result = await Promise.race([
+        this.session!.sendAndWait(sendOpts),
+        errorPromise,
+      ]);
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
       const resultObj = result as Record<string, unknown>;
       const resultData = (resultObj?.data as Record<string, unknown>) ?? {};
 
-      resolve({
+      return {
         content:
           text.trim() ||
           (typeof resultData?.content === 'string' ? resultData.content : '') ||
           (typeof resultObj?.content === 'string' ? resultObj.content : '') ||
           (typeof result === 'string' ? result : '') ||
           '_(no response)_',
-      });
-    } catch (err) {
-      reject(err instanceof Error ? err : new Error(String(err)));
+      };
     } finally {
       if (onDelta) this.off('delta', onDelta);
       if (errorHandler) this.off('error', errorHandler);
-      this._busy = false;
-      this.processing = false;
-      if (this.queue.length) this.processQueue();
     }
+  }
+
+  /** Send with mode: 'immediate' to steer the agent mid-turn (bypasses queue) */
+  async sendImmediate(prompt: string, attachments?: FileAttachment[]): Promise<void> {
+    if (!this._alive) throw new Error('Session not started');
+    const opts: MessageOptions = { prompt, mode: 'immediate' };
+    if (attachments?.length) opts.attachments = attachments;
+    // Fire-and-forget: immediate messages steer the current turn, no separate response
+    await this.session!.send(opts);
   }
 
   approve() {
@@ -655,8 +636,7 @@ export class Session extends EventEmitter {
   async disconnect(): Promise<void> {
     // Disconnect but preserve session data on disk for resume
     this._alive = false;
-    this._busy = false;
-    this.queue = [];
+    this._turnActive = false;
     try {
       await this.session?.disconnect();
     } catch {
@@ -696,8 +676,7 @@ export class Session extends EventEmitter {
 
   async kill() {
     this._alive = false;
-    this._busy = false;
-    this.queue = [];
+    this._turnActive = false;
     try {
       await this.session?.disconnect();
     } catch {

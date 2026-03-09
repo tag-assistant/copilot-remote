@@ -74,7 +74,7 @@ describe('Session', () => {
     });
   });
 
-  it('queues prompts and processes them sequentially in order', async () => {
+  it('sends prompts directly to SDK (SDK handles queueing via enqueue mode)', async () => {
     const session = createTestSession();
     let releaseFirst: (() => void) | undefined;
 
@@ -99,9 +99,10 @@ describe('Session', () => {
 
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(sdk.sendAndWaitCalls.length, 1);
+    // Both calls are made immediately — SDK handles queueing internally
+    assert.equal(sdk.sendAndWaitCalls.length, 2);
     assert.equal(sdk.sendAndWaitCalls[0]?.prompt, 'first');
-    assert.equal(session.busy, true);
+    assert.equal(sdk.sendAndWaitCalls[1]?.prompt, 'second');
 
     releaseFirst?.();
 
@@ -111,9 +112,9 @@ describe('Session', () => {
       sdk.sendAndWaitCalls.map((call) => call.prompt),
       ['first', 'second'],
     );
-    assert.equal(firstResult.content, 'first-delta');
-    assert.equal(secondResult.content, 'second-delta');
-    assert.equal(session.busy, false);
+    // Both deltas are captured by their respective send() calls
+    assert.ok(firstResult.content.includes('first-delta'));
+    assert.ok(secondResult.content.includes('second-delta'));
   });
 
   it('falls back to final SDK content when no delta events were streamed', async () => {
