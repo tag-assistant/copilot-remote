@@ -16,6 +16,7 @@ import { handleCdCommand } from './cd-command.js';
 import { handleIncomingFileUpload } from './file-intake.js';
 import { log } from './log.js';
 import { resolveProviderConfig } from './provider-config.js';
+import { RestartManager } from './restart-manager.js';
 import { finalizeStreamResponse } from './stream-lifecycle.js';
 import {
   PROMPT_COMMANDS, TOOL_LABELS, LIFECYCLE_REACTIONS, PERM_ICONS,
@@ -160,9 +161,36 @@ async function main(): Promise<void> {
   const pendingInputs = new Map<number, string>();
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
+  let shuttingDown = false;
+  let pendingRestartReason: string | null = null;
   // Per-session usage tracking (keyed by session key)
   const lastUsageMap = new Map<string, { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; duration: number }>();
   const contextInfoMap = new Map<string, { tokenLimit: number; currentTokens: number; messagesLength: number }>();
+
+  const requestSelfRestart = (reason: string) => {
+    pendingRestartReason = reason;
+    log.info('[restart] Requested:', reason);
+    process.kill(process.pid, 'SIGUSR1');
+  };
+
+  const restartManager = new RestartManager({
+    workDirs: [config.workDir],
+    config: configStore.raw(),
+    onRestartRequired: ({ reason, changedPath }) => {
+      const supervisor = restartManager.getStatus().supervisor;
+      const details = changedPath ? `\n\nChanged: \`${changedPath}\`` : '';
+      const action = supervisor ? '\n\nSupervisor detected — automatic restart is available.' : '\n\nUse /restart to reload now.';
+      for (const chatKey of sessions.keys()) {
+        client.sendMessage(chatKey, `♻️ ${reason}${details}${action}`).catch(() => {});
+      }
+    },
+    onRequestRestart: ({ reason }) => {
+      for (const chatKey of sessions.keys()) {
+        client.sendMessage(chatKey, `♻️ Restarting to load updated capabilities…\n\n${reason}`).catch(() => {});
+      }
+      requestSelfRestart(reason);
+    },
+  });
 
   // Session key: "chatId" or "chatId:threadId" for forum topics
   const sessionKey = (chatId: string, threadId?: number) => (threadId ? chatId + ':' + threadId : chatId);
@@ -447,6 +475,7 @@ async function main(): Promise<void> {
       if (saved.cwd && saved.cwd !== config.workDir) {
         workDirs.set(chatId, saved.cwd);
         opts.cwd = saved.cwd;
+        restartManager.addWorkDir(saved.cwd);
       }
       try {
         await s.resume(saved.sessionId, opts);
@@ -465,6 +494,7 @@ async function main(): Promise<void> {
 
     // Create new session with a deterministic ID derived from chatId[:threadId].
     await s.start(opts);
+    restartManager.addWorkDir(workDir(chatId));
     if (s.sessionId) {
       sessionStore.set(chatId, {
         sessionId: s.sessionId,
@@ -991,6 +1021,7 @@ async function main(): Promise<void> {
       }
       case '/cd': {
         await handleCdCommand(args[0], chatId, { client, sessions, workDirs, getSession });
+        restartManager.addWorkDir(workDir(chatId));
         break;
       }
       case '/sessions': {
@@ -1431,6 +1462,31 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case '/restart': {
+        const status = restartManager.getStatus();
+        const reason = argStr || status.pending?.reason || 'Manual restart requested';
+        await client.sendMessage(chatId, `♻️ Restart requested.\n\n${reason}`);
+        restartManager.requestManualRestart(reason);
+        break;
+      }
+      case '/selfdev': {
+        const status = restartManager.getStatus();
+        const lines = [
+          '🧬 *Self Development*',
+          `Enabled: ${status.enabled ? 'yes' : 'no'}`,
+          `Supervisor: ${status.supervisor ?? 'none detected'}`,
+          `Auto-restart: ${status.autoRestart ? 'yes' : 'no'}`,
+          `Watched paths: ${status.watchedPaths.length}`,
+        ];
+        if (status.pending?.reason) lines.push(`Pending restart: ${status.pending.reason}`);
+        if (status.watchedPaths.length) {
+          lines.push('', '*Watching*');
+          lines.push(...status.watchedPaths.slice(0, 8).map((target) => `• \`${target}\``));
+          if (status.watchedPaths.length > 8) lines.push(`• …and ${status.watchedPaths.length - 8} more`);
+        }
+        await client.sendMessage(chatId, lines.join('\n'));
+        break;
+      }
       case '/tools': {
         const s = sessions.get(chatId);
         if (!s?.alive) {
@@ -1506,6 +1562,8 @@ async function main(): Promise<void> {
             '',
             '*⚙️ Config*',
             '`/config` — Settings menu (model, mode, security, display)',
+            '`/selfdev` — Watcher status and pending restart info',
+            '`/restart` — Restart bridge to load new capabilities',
             '`/yes` `/no` — Approve/deny tool permission',
             '',
             '*📎 Tips*',
@@ -1670,13 +1728,20 @@ async function main(): Promise<void> {
   };
 
   // ── Shutdown ──
-  const shutdown = async () => {
+  const shutdown = async (restart = false) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    restartManager.stop();
     client.stop();
     await Promise.allSettled([...sessions.values()].map((s) => s.disconnect().catch(() => {})));
-    process.exit(0);
+    process.exit(restart ? 75 : 0);
   };
   process.on('SIGINT', () => shutdown());
   process.on('SIGTERM', () => shutdown());
+  process.on('SIGUSR1', () => {
+    log.info('[restart] Graceful restart:', pendingRestartReason ?? 'SIGUSR1');
+    void shutdown(true);
+  });
 
   await client.start();
 }

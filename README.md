@@ -52,6 +52,7 @@ Like Claude Remote Control, the important bit is that the local process must sta
 - **Session persistence** — deterministic Telegram chat/topic session IDs survive restarts and line up cleanly with CLI resume
 - **Custom agents** — use workspace `.copilot/agents/` definitions
 - **Custom tools** — Copilot can send you Telegram notifications
+- **Self-development hooks** — watch config, MCP wiring, prompts, skills, and agents, then restart cleanly to load new capabilities
 
 ## Commands
 
@@ -71,6 +72,8 @@ Like Claude Remote Control, the important bit is that the local process must sta
 | `/tools` | List available tools |
 | `/files` | Workspace files |
 | `/usage` | Token quota |
+| `/selfdev` | Show watched capability paths and restart status |
+| `/restart` | Restart the bridge to load new capabilities |
 
 ## Config
 
@@ -202,6 +205,51 @@ EOF
 
 launchctl load ~/Library/LaunchAgents/com.copilot-remote.plist
 ```
+
+Running under `launchd` or `systemd` is what makes self-development pleasant: when `copilot-remote` exits for a capability reload, the supervisor brings it right back.
+
+## Self Development
+
+`copilot-remote` can now watch modular capability inputs and reload itself when they change.
+
+Watched targets include:
+
+- `~/.copilot-remote/config.json`
+- `~/.copilot/mcp-config.json`
+- workspace agent directories such as `.github/agents/`, `.copilot/agents/`, `.claude/agents/`
+- workspace prompt directories such as `.github/prompts/`
+- skill directories such as `~/.copilot/skills`, `~/.github/skills`, and any configured `skillDirectories`
+
+Useful commands:
+
+- `/selfdev` — show watcher status, supervisor detection, pending restart state, and watched paths
+- `/restart` — force a clean bridge restart to load newly added capabilities
+
+Behavior notes:
+
+- if `copilot-remote` detects `launchd` or `systemd`, it can auto-restart after capability changes
+- if no supervisor is detected, it will still flag that a restart is needed and you can use `/restart`
+- this is meant for **modular self-development**: config, skills, prompts, agents, and MCP wiring
+- core bridge rewrites are still restart-bound and intentionally not hot-loaded into the running process
+
+Optional config in `~/.copilot-remote/config.json`:
+
+```json
+{
+  "selfDevelopment": {
+    "enabled": true,
+    "autoRestart": true,
+    "debounceMs": 1500,
+    "watchConfig": true,
+    "watchMcp": true,
+    "watchAgents": true,
+    "watchSkills": true,
+    "watchPrompts": true
+  }
+}
+```
+
+This gives you the fun part of OpenClaw-style evolution without going full goblin mode on the bridge core.
 
 ## Browser Mocking for Telegram Web Apps
 

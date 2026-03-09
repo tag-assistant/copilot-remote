@@ -4,7 +4,7 @@ import { log } from './log.js';
 import { resolveProviderConfig, type RemoteProviderConfig } from './provider-config.js';
 
 const CONFIG_DIR = join(process.env.HOME ?? '.', '.copilot-remote');
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+export const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 export type PermKind = 'shell' | 'write' | 'mcp' | 'read' | 'url' | 'custom-tool';
 export type MessageMode = 'enqueue' | 'immediate';
@@ -40,6 +40,16 @@ export interface GlobalConfig {
   systemInstructions?: string;
   availableTools?: string[];
   excludedTools?: string[];
+  selfDevelopment?: {
+    enabled?: boolean;
+    autoRestart?: boolean;
+    debounceMs?: number;
+    watchConfig?: boolean;
+    watchMcp?: boolean;
+    watchAgents?: boolean;
+    watchSkills?: boolean;
+    watchPrompts?: boolean;
+  };
   [key: string]: unknown;
 }
 
