@@ -138,7 +138,7 @@ $PROG_ARGS
         <key>GITHUB_TOKEN</key>
         <string>$GITHUB_TOKEN</string>
         <key>PATH</key>
-        <string>$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
 $EXTRA_ENV
@@ -204,7 +204,7 @@ WorkingDirectory=$INSTALL_DIR
 Environment=COPILOT_REMOTE_BOT_TOKEN=$COPILOT_REMOTE_BOT_TOKEN
 Environment=GITHUB_TOKEN=$GITHUB_TOKEN
 Environment=COPILOT_REMOTE_WORKDIR=$HOME
-Environment=PATH=$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$(dirname "$NODE_BIN"):$(dirname "$COPILOT_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
 
