@@ -128,7 +128,6 @@ export interface SessionOptions {
   availableTools?: string[];
   excludedTools?: string[];
   /** Idle timeout in ms — kills turn if no SDK events for this duration. 0 = disabled. Default: 900000 (15 min) */
-  idleTimeoutMs?: number;
 }
 
 export interface CopilotMessage {
@@ -231,7 +230,6 @@ export class Session extends EventEmitter {
   private _busy = false;
   private _autopilot = false;
   private _messageMode: 'enqueue' | 'immediate' | undefined = undefined;
-  private _idleTimeoutMs = 900_000; // 15 min default
   private cwd = '';
 
   // Message queue for sequential processing
@@ -366,7 +364,6 @@ export class Session extends EventEmitter {
     this.cwd = opts.cwd;
     this._autopilot = opts.autopilot ?? false;
     this._messageMode = opts.messageMode;
-    this._idleTimeoutMs = opts.idleTimeoutMs ?? 900_000;
 
     this.client = await Session.getSharedClient({ binary: opts.binary, cliUrl: opts.cliUrl, githubToken: opts.githubToken, provider: opts.provider });
 
@@ -531,58 +528,13 @@ export class Session extends EventEmitter {
       if (this._messageMode) sendOpts.mode = this._messageMode;
       if (attachments?.length) sendOpts.attachments = attachments;
 
-      const ABSOLUTE_TIMEOUT = 600_000; // 10 min hard cap
-      const IDLE_TIMEOUT = this._idleTimeoutMs;
-
-      // Idle timeout: resets on every SDK event. Pauses during user input/permission waits.
-      let idleTimer: ReturnType<typeof setTimeout> | undefined;
-      let idleReject: ((err: Error) => void) | undefined;
-      let idlePaused = false;
-      let unsubscribeIdle: (() => void) | undefined;
-
-      const resetIdleTimer = () => {
-        if (!IDLE_TIMEOUT || idlePaused) return;
-        if (idleTimer) clearTimeout(idleTimer);
-        if (idleReject) {
-          idleTimer = setTimeout(() => idleReject?.(new Error(`Session idle timeout — no activity for ${Math.round(IDLE_TIMEOUT / 60000)} minutes`)), IDLE_TIMEOUT);
-        }
-      };
-      const pauseIdle = () => { idlePaused = true; if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; } };
-      const resumeIdle = () => { idlePaused = false; resetIdleTimer(); };
-
-      let idlePromise: Promise<never> | undefined;
-      if (IDLE_TIMEOUT > 0) {
-        this.on('user_input_request', pauseIdle);
-        this.on('user_input_response', resumeIdle);
-        this.on('permission_request', pauseIdle);
-        this.on('permission_response', resumeIdle);
-        idlePromise = new Promise<never>((_resolve, reject) => {
-          idleReject = reject;
-          resetIdleTimer();
-          unsubscribeIdle = this.session!.on(() => { resetIdleTimer(); });
-        });
-        idlePromise.catch(() => {}); // prevent unhandled rejection
-      }
-
       let result;
       try {
-        const races: Promise<unknown>[] = [
-          this.session!.sendAndWait(sendOpts, ABSOLUTE_TIMEOUT),
+        result = await Promise.race([
+          this.session!.sendAndWait(sendOpts),
           errorPromise,
-        ];
-        if (idlePromise) races.push(idlePromise);
-        result = await Promise.race(races);
-      } finally {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleReject = undefined;
-        unsubscribeIdle?.();
-        if (IDLE_TIMEOUT > 0) {
-          this.off('user_input_request', pauseIdle);
-          this.off('user_input_response', resumeIdle);
-          this.off('permission_request', pauseIdle);
-          this.off('permission_response', resumeIdle);
-        }
-      }
+        ]);
+      } finally { /* no cleanup needed */ }
       log.debug('sendAndWait result:', JSON.stringify(result).slice(0, 500));
 
       const resultObj = result as Record<string, unknown>;
@@ -712,7 +664,6 @@ export class Session extends EventEmitter {
     this.cwd = opts.cwd;
     this._autopilot = opts.autopilot ?? false;
     this._messageMode = opts.messageMode;
-    this._idleTimeoutMs = opts.idleTimeoutMs ?? 900_000;
 
     if (!this.client) {
       this.client = await Session.getSharedClient({ binary: opts.binary, cliUrl: opts.cliUrl, githubToken: opts.githubToken, provider: opts.provider });

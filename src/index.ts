@@ -467,7 +467,6 @@ async function main(): Promise<void> {
       excludedTools: [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])].length
         ? [...new Set([...(globalCfg.excludedTools ?? []), ...(c.excludedTools ?? [])])]
         : undefined,
-      idleTimeoutMs: globalCfg.idleTimeoutMinutes != null ? globalCfg.idleTimeoutMinutes * 60_000 : undefined,
     };
 
     // Try to resume an existing session, preferring the deterministic Telegram-derived ID.
