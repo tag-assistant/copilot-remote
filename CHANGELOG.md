@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0 (2026-03-09)
+
+### Streaming & Session UX
+- **Full live activity relay** — thinking, tool progress, plan updates, and subagent status now stream through Telegram in real time
+- **Stable overlapping tool status** — active tool progress no longer disappears when multiple tool calls overlap
+- **No-op `turn_start` scaffolding** — event wiring stays in place for future expansion without changing current behavior
+- **Cleaner status output** — removed the fallback `✍️ Writing response` indicator
+
+### Packaging & Install
+- **npm publish-ready package** — tarball now includes only runtime artifacts, bundled installer assets, and the SDK patch script
+- **Dedicated install commands** — `copilot-remote install` and `copilot-remote daemon-install` now invoke the bundled daemon installer
+- **Portable installer cleanup** — docs, metadata, Node version requirements, and auth behavior now match the actual supported install paths
+
+### Service Hardening
+- **Secrets moved out of service definitions** — launchd/systemd no longer persist bot or GitHub tokens in environment blocks
+- **Locked-down local config** — installer writes `~/.copilot-remote/config.json` with user-only permissions for unattended startup
+- **Safer daemon logging** — macOS logs now live under `~/.copilot-remote/logs/` with tightened file permissions
+
 ## 0.7.0 (2026-03-08)
 
 ### Telegram Features
