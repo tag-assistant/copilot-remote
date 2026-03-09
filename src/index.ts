@@ -759,11 +759,39 @@ async function main(): Promise<void> {
       toolLines.push(label + detail);
       schedEdit();
     };
+    const toolOutputBuffers = new Map<string, string[]>();
+    const MAX_PARTIAL_LINES = 3;
+    const onToolOutput = (t: { toolCallId?: string; toolName: string; content: unknown }) => {
+      if (!c.showTools) return;
+      const text = typeof t.content === 'string' ? t.content : JSON.stringify(t.content ?? '');
+      if (!text.trim()) return;
+      const key = t.toolCallId ?? t.toolName;
+      const lines = toolOutputBuffers.get(key) ?? [];
+      // Append new lines, keep only the last N
+      for (const line of text.split('\n')) {
+        if (line.trim()) lines.push(line);
+      }
+      const tail = lines.slice(-MAX_PARTIAL_LINES);
+      toolOutputBuffers.set(key, tail);
+      // Update the last tool line with partial output
+      if (toolLines.length) {
+        const baseLine = toolLines[toolLines.length - 1].split('\n')[0]; // strip prior partial output
+        toolLines[toolLines.length - 1] = baseLine + '\n```\n' + tail.join('\n') + '\n```';
+        schedEdit();
+      }
+    };
     const onToolEnd = (t: ToolEvent) => {
+      // Clear partial output buffer for this tool
+      const key = t.toolCallId ?? t.toolName;
+      toolOutputBuffers.delete(key);
       activeToolStatus = ''; // clear active tool status
       sendTypingSafe(); // re-send typing (Telegram cancels on edit)
       if (t.toolName === 'report_intent' || t.toolName === 'ask_user') return;
       if (!c.showTools || !toolLines.length) return;
+      // Strip partial output from tool line before adding completion mark
+      if (toolLines.length) {
+        toolLines[toolLines.length - 1] = toolLines[toolLines.length - 1].split('\n')[0];
+      }
       const elapsed = t.toolCallId ? toolStartTimes.get(t.toolCallId) : undefined;
       const duration = elapsed ? ` ${((Date.now() - elapsed) / 1000).toFixed(1)}s` : '';
       if (t.toolCallId) toolStartTimes.delete(t.toolCallId);
@@ -833,6 +861,7 @@ async function main(): Promise<void> {
     session.on('thinking', onThink);
     session.on('delta', onDelta);
     session.on('tool_start', onToolStart);
+    session.on('tool_output', onToolOutput);
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
     session.on('user_input_request', onUserInput);
@@ -846,6 +875,7 @@ async function main(): Promise<void> {
       session.off('thinking', onThink);
       session.off('delta', onDelta);
       session.off('tool_start', onToolStart);
+      session.off('tool_output', onToolOutput);
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);
       session.off('user_input_request', onUserInput);

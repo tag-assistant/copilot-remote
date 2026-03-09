@@ -406,6 +406,13 @@ export class Session extends EventEmitter {
       case 'tool.execution_start':
         this.emit('tool_start', { toolCallId: d.toolCallId, toolName: d.name ?? d.toolName, arguments: d.arguments });
         break;
+      case 'tool.execution_partial_result':
+        this.emit('tool_output', {
+          toolCallId: d.toolCallId,
+          toolName: d.name ?? d.toolName,
+          content: d.result ?? d.content ?? d.text ?? '',
+        });
+        break;
       case 'tool.execution_complete': {
         const result = d.result as any;
         // Check for image content blocks in the result
