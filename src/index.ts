@@ -129,6 +129,7 @@ async function main(): Promise<void> {
   _globalClient = client;
   const workDirs = new Map<string, string>();
   const pendingPerms = new Map<number, string>();
+  const pendingInputs = new Map<number, string>();
   const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
   // Per-session usage tracking (keyed by session key)
@@ -492,14 +493,6 @@ async function main(): Promise<void> {
     sendTypingSafe();
     const typingInterval = setInterval(() => sendTypingSafe(), 3000);
 
-    // ── Pipeline perf tracking (Node perf_hooks) ──
-    const perfId = `turn-${chatId}-${Date.now()}`;
-    const mark = (name: string) => performance.mark(`${perfId}:${name}`);
-    mark('start');
-    let deltaCount = 0, deltaBytes = 0;
-    let flushCount = 0, flushTotalMs = 0;
-    let tgApiCalls = 0, tgApiTotalMs = 0;
-
     let streamMsgId: number | null = null;
     let draftId: number | null = null;
     let useDraft = !!client.sendDraft; // try draft mode if client supports it
@@ -515,10 +508,9 @@ async function main(): Promise<void> {
     const display = () => {
       const p: string[] = [];
       if (intentText) p.push('🎯 *' + intentText + '*');
-      const thinking = thinkingText || (c.showThinking ? completedThinkingText : '');
-      if (thinking && c.showThinking) {
+      if (thinkingText && c.showThinking) {
         // Match OpenClaw: per-line italic wrapping with "Reasoning:" header
-        const italicLines = thinking.trim().split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
+        const italicLines = thinkingText.trim().split('\n').map(line => line.trim() ? '_' + line.replace(/_/g, '\\_') + '_' : '').join('\n');
         p.push('Reasoning:\n' + italicLines);
       }
       if (toolLines.length) p.push(toolLines.join('\n'));
@@ -537,20 +529,15 @@ async function main(): Promise<void> {
     const flush = async () => {
       timer = null;
       lastEdit = Date.now();
-      const flushStart = performance.now();
       const text = display();
-      if (!text.trim()) { log.debug('[flush] empty display, responseText:', responseText.length, 'intentText:', intentText.length, 'toolLines:', toolLines.length); return; }
-      if (flushCount === 0) mark('first-flush');
-      flushCount++;
-      log.debug('[flush] #' + flushCount, 'text:', text.length, 'streamMsgId:', streamMsgId, 'sendingFirst:', sendingFirst, 'useDraft:', useDraft);
+      if (!text.trim()) return;
+      log.debug('[flush]', 'text:', text.length, 'streamMsgId:', streamMsgId, 'sendingFirst:', sendingFirst, 'useDraft:', useDraft);
 
       // Try native draft streaming first
       if (useDraft && client.sendDraft) {
         if (!draftId) draftId = client.allocateDraftId!();
-        const tgStart = performance.now();
         const ok = await client.sendDraft(chatId, draftId, text);
-        tgApiCalls++; tgApiTotalMs += performance.now() - tgStart;
-        if (ok) { flushTotalMs += performance.now() - flushStart; return; }
+        if (ok) return;
         useDraft = false; // fall back to edit-in-place
       }
 
@@ -560,16 +547,13 @@ async function main(): Promise<void> {
         if (text.length < MIN_INITIAL_CHARS) { log.debug('[flush] text too short:', text.length); return; }
         sendingFirst = true;
         log.debug('[flush] sending first message, text:', text.length);
-        const tgStart = performance.now();
         const newMsgId = await client.sendMessage(chatId, text, { disableLinkPreview: true });
         log.debug('[flush] sendMessage returned:', newMsgId);
-        tgApiCalls++; tgApiTotalMs += performance.now() - tgStart;
         sendingFirst = false;
         streamMsgId = newMsgId;
         log.debug('Stream: new message', streamMsgId);
       } else {
         log.debug('Stream: edit message', streamMsgId);
-        const tgStart = performance.now();
         // Use raw edit (plain text, no markdown→HTML) for streaming — fast path
         const [cid] = resolveKey(chatId);
         const tc = client as unknown as { editMessageRaw?: (c: string, m: number, t: string) => Promise<void> };
@@ -577,11 +561,9 @@ async function main(): Promise<void> {
           ? tc.editMessageRaw.call(client, cid, streamMsgId, text)
           : client.editMessage(chatId, streamMsgId, text);
         editPromise.then(() => {
-          tgApiCalls++; tgApiTotalMs += performance.now() - tgStart;
           sendTypingSafe();
         }).catch((e) => { log.debug('Stream edit failed:', e); });
       }
-      flushTotalMs += performance.now() - flushStart;
     };
 
     const schedEdit = () => {
@@ -594,41 +576,10 @@ async function main(): Promise<void> {
       thinkingText += t;
       schedEdit(); // thinking shows inline in the main streaming message
     };
-    let thinkingDone = false; // true once assistant.reasoning (final) fires
-    let pendingResponseText = ''; // buffer response deltas until thinking finishes streaming
-
-    let completedThinkingText = ''; // preserved after transition for display
-
-    const flushThinkingTransition = () => {
-      completedThinkingText = thinkingText; // preserve for final display
-      thinkingText = '';
-      // Don't delete stream message — just clear thinking and continue in same message
-      react(LIFECYCLE_REACTIONS.writing);
-      // Flush any buffered response text
-      if (pendingResponseText) {
-        responseText += pendingResponseText;
-        pendingResponseText = '';
-        schedEdit();
-      }
-    };
-
-    const onThinkingDone = () => {
-      thinkingDone = true;
-      // If response deltas already arrived, flush the transition now
-      if (pendingResponseText) flushThinkingTransition();
-    };
 
     const onDelta = (t: string) => {
-      deltaCount++; deltaBytes += t.length;
-      if (deltaCount === 1) mark('first-delta');
-      // If still streaming thinking, buffer response until thinking_done
-      if (thinkingText && !thinkingDone) {
-        pendingResponseText += t;
-        return;
-      }
-      // Thinking finished — transition if needed
       if (thinkingText) {
-        flushThinkingTransition();
+        thinkingText = '';
       }
       if (!responseText) react(LIFECYCLE_REACTIONS.writing);
       responseText += t;
@@ -729,7 +680,6 @@ async function main(): Promise<void> {
       if (id) pendingPerms.set(id, chatId);
     };
 
-    const pendingInputs = new Map<number, string>(); // msgId → chatId for user input answers
     const onUserInput = async (req: UserInputRequest) => {
       const question = req.question ?? (typeof req === 'string' ? req : JSON.stringify(req));
       const choices = req.choices as string[] | undefined;
@@ -745,7 +695,6 @@ async function main(): Promise<void> {
 
     session.on('thinking', onThink);
     session.on('delta', onDelta);
-    session.on('thinking_done', onThinkingDone);
     session.on('tool_start', onToolStart);
     session.on('tool_complete', onToolEnd);
     session.on('permission_request', onPerm);
@@ -762,7 +711,6 @@ async function main(): Promise<void> {
       }
       session.off('thinking', onThink);
       session.off('delta', onDelta);
-      session.off('thinking_done', onThinkingDone);
       session.off('tool_start', onToolStart);
       session.off('tool_complete', onToolEnd);
       session.off('permission_request', onPerm);
@@ -794,13 +742,6 @@ async function main(): Promise<void> {
 
       const final = res.content;
       log.debug('[finalize] streamMsgId:', streamMsgId, 'final length:', final.length);
-
-      // Finalize: send the complete response
-      // If thinking is still streaming (no response came), transition now
-      if (thinkingText) {
-        completedThinkingText = thinkingText;
-        thinkingText = '';
-      }
       // Materialize: convert streaming message into final response in-place when possible.
       // This avoids the visible delete+send flash that breaks reading flow.
       const chunks = final ? (await import('./format.js')).markdownToTelegramChunks(final, 4096) : [];
@@ -818,16 +759,6 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, final, { disableLinkPreview: true });
       }
       react(LIFECYCLE_REACTIONS.complete);
-      // Pipeline perf summary
-      mark('end');
-      const dur = (a: string, b: string) => {
-        try { return performance.measure(`${perfId}:${a}→${b}`, `${perfId}:${a}`, `${perfId}:${b}`).duration.toFixed(0); }
-        catch { return '-'; }
-      };
-      log.info(`[perf] total=${dur('start','end')}ms ttfd=${dur('start','first-delta')}ms ttff=${dur('start','first-flush')}ms deltas=${deltaCount}(${deltaBytes}B) flushes=${flushCount}(${flushTotalMs.toFixed(0)}ms) tgApi=${tgApiCalls}(${tgApiTotalMs.toFixed(0)}ms) response=${responseText.length}B`);
-      // Cleanup marks
-      performance.clearMarks(`${perfId}:start`); performance.clearMarks(`${perfId}:first-delta`);
-      performance.clearMarks(`${perfId}:first-flush`); performance.clearMarks(`${perfId}:end`);
     } catch (err) {
       log.error('[finalize] error:', err);
       cleanup();
@@ -859,7 +790,13 @@ async function main(): Promise<void> {
           await client.editButtons(chatId, replyToMsgId, '❌ Denied', []);
           return;
         }
-        // Check if it's an answer to a user input question
+      }
+    }
+
+    if (replyToMsgId && pendingInputs.has(replyToMsgId)) {
+      const s = sessions.get(key);
+      if (s?.alive) {
+        pendingInputs.delete(replyToMsgId);
         s.answerInput(text);
         return;
       }

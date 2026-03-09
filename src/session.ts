@@ -320,7 +320,6 @@ export class Session extends EventEmitter {
         this.emit('thinking', d.deltaContent ?? d.content ?? d.text ?? '');
         break;
       case 'assistant.reasoning':
-        this.emit('thinking_done');
         break;
       case 'assistant.message':
         this.emit('message', d.content ?? '');

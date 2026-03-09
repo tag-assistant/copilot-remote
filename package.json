@@ -20,7 +20,7 @@
     "format": "prettier --write 'src/**/*.ts'",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/cli.js",
-    "test": "node --test dist/**/*.test.js",
+    "test": "tsx --test src/**/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
