@@ -9,6 +9,7 @@ import { log } from './log.js';
 
 const DB_PATH = join(process.env.HOME ?? '/tmp', '.copilot', 'session-store.db');
 const CHAT_MAP_PATH = join(process.env.HOME ?? '/tmp', '.copilot-remote', 'chat-sessions.json');
+const WORK_DIR_PATH = join(process.env.HOME ?? '/tmp', '.copilot-remote', 'work-dirs.json');
 
 export interface SessionEntry {
   sessionId: string;
@@ -30,6 +31,7 @@ interface DbSession {
 
 export class SessionStore {
   private chatMap: Record<string, { sessionId: string; model: string }> = {};
+  private workDirMap: Record<string, string> = {};
   private db: DatabaseSync | null = null;
 
   static deterministicSessionId(chatId: string): string {
@@ -48,6 +50,7 @@ export class SessionStore {
 
   constructor() {
     this.loadChatMap();
+    this.loadWorkDirMap();
     this.openDb();
   }
 
@@ -107,6 +110,28 @@ export class SessionStore {
   delete(chatId: string): void {
     delete this.chatMap[chatId];
     this.saveChatMap();
+  }
+
+  /** Get persisted working directory for a chat */
+  getWorkDir(chatId: string): string | undefined {
+    return this.workDirMap[chatId];
+  }
+
+  /** Persist working directory for a chat */
+  setWorkDir(chatId: string, cwd: string): void {
+    this.workDirMap[chatId] = cwd;
+    this.saveWorkDirMap();
+  }
+
+  /** Remove persisted working directory for a chat */
+  deleteWorkDir(chatId: string): void {
+    delete this.workDirMap[chatId];
+    this.saveWorkDirMap();
+  }
+
+  /** Get all persisted working directories */
+  getAllWorkDirs(): Map<string, string> {
+    return new Map(Object.entries(this.workDirMap));
   }
 
   /** List all sessions from SQLite DB, sorted by most recent */
@@ -218,6 +243,21 @@ export class SessionStore {
     try {
       mkdirSync(dirname(CHAT_MAP_PATH), { recursive: true });
       writeFileSync(CHAT_MAP_PATH, JSON.stringify(this.chatMap, null, 2));
+    } catch { /* ignore */ }
+  }
+
+  private loadWorkDirMap(): void {
+    try {
+      this.workDirMap = JSON.parse(readFileSync(WORK_DIR_PATH, 'utf-8'));
+    } catch {
+      this.workDirMap = {};
+    }
+  }
+
+  private saveWorkDirMap(): void {
+    try {
+      mkdirSync(dirname(WORK_DIR_PATH), { recursive: true });
+      writeFileSync(WORK_DIR_PATH, JSON.stringify(this.workDirMap, null, 2));
     } catch { /* ignore */ }
   }
 }

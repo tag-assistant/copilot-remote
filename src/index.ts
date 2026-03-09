@@ -165,10 +165,10 @@ async function main(): Promise<void> {
   const sessions = new Map<string, Session>();
   _globalSessions = sessions;
   _globalClient = client;
-  const workDirs = new Map<string, string>();
+  const sessionStore = new SessionStore();
+  const workDirs = new Map<string, string>(sessionStore.getAllWorkDirs());
   const pendingPerms = new Map<number, string>();
   const pendingInputs = new Map<number, string>();
-  const sessionStore = new SessionStore();
   const threadMap = new Map<string, number>(); // sessionKey → threadId
   let shuttingDown = false;
   let pendingRestartReason: string | null = null;
@@ -283,6 +283,7 @@ async function main(): Promise<void> {
       }),
     );
     sessionStore.delete(chatId);
+    sessionStore.deleteWorkDir(chatId);
   }
 
   // Get or create session
@@ -979,6 +980,7 @@ async function main(): Promise<void> {
         if (args[0] && cmd === '/start') {
           const dir = args[0].replace(/^~/, process.env.HOME ?? '~');
           workDirs.set(chatId, dir);
+          sessionStore.setWorkDir(chatId, dir);
         }
         const old = sessions.get(chatId);
         if (old?.alive) old.kill();
@@ -1020,6 +1022,7 @@ async function main(): Promise<void> {
       }
       case '/cd': {
         await handleCdCommand(args[0], chatId, { client, sessions, workDirs, getSession });
+        sessionStore.setWorkDir(chatId, workDir(chatId));
         restartManager.addWorkDir(workDir(chatId));
         break;
       }

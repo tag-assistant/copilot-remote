@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionStore } from '../store.js';
 
@@ -24,5 +24,41 @@ describe('SessionStore deterministic IDs', () => {
 
   it('ignores non-deterministic legacy session IDs', () => {
     assert.equal(SessionStore.sessionKeyFromSessionId('session-abc-123'), null);
+  });
+});
+
+describe('SessionStore workDir persistence', () => {
+  // Use unique keys per test run to avoid collisions with real data
+  const prefix = `test-${Date.now()}-`;
+
+  afterEach(() => {
+    // Clean up test keys
+    const store = new SessionStore();
+    for (const [key] of store.getAllWorkDirs()) {
+      if (key.startsWith(prefix)) store.deleteWorkDir(key);
+    }
+  });
+
+  it('persists and restores workDirs across instances', () => {
+    const k1 = `${prefix}chat-1`;
+    const k2 = `${prefix}chat-2`;
+    const store1 = new SessionStore();
+    store1.setWorkDir(k1, '/projects/foo');
+    store1.setWorkDir(k2, '/projects/bar');
+
+    // New instance should restore persisted dirs
+    const store2 = new SessionStore();
+    assert.equal(store2.getWorkDir(k1), '/projects/foo');
+    assert.equal(store2.getWorkDir(k2), '/projects/bar');
+  });
+
+  it('deleteWorkDir removes the entry', () => {
+    const k1 = `${prefix}chat-del`;
+    const store1 = new SessionStore();
+    store1.setWorkDir(k1, '/projects/foo');
+    store1.deleteWorkDir(k1);
+
+    const store2 = new SessionStore();
+    assert.equal(store2.getWorkDir(k1), undefined);
   });
 });
