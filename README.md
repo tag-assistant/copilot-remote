@@ -2,6 +2,8 @@
 
 Control GitHub Copilot from Telegram. Full SDK integration — streaming, tool calls, permissions, multi-session forum topics.
 
+Conceptually, this is a lot like [Claude Code Remote Control's requirements](https://code.claude.com/docs/en/remote-control#requirements): the real session keeps running locally on your machine, and your phone is just a remote control surface for that local environment.
+
 [![CI](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/tag-assistant/copilot-remote/actions/workflows/ci.yml)
 
 ## Setup
@@ -209,10 +211,13 @@ launchctl load ~/Library/LaunchAgents/com.copilot-remote.plist
 
 ## Requirements
 
+- A local Copilot session environment that is already authenticated and able to run on this machine
 - Node.js ≥ 20
 - `gh` CLI authenticated (`gh auth login`)
 - GitHub account with Copilot license
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
+
+Like Claude Remote Control, the important bit is that the local process must stay alive and authenticated. `copilot-remote` does not move your tools, files, or MCP setup into the cloud — it relays into the Copilot session running on your machine.
 
 ## License
 
