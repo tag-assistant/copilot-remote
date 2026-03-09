@@ -30,7 +30,6 @@ export const PROMPT_COMMANDS: Record<string, { usage?: string; prompt: (args: st
   '/tasks': { prompt: () => 'List all active background tasks and subagents.' },
   '/instructions': { prompt: () => 'Show which custom instruction files are active in this repository.' },
   '/skills': { prompt: () => 'List all available skills and their status.' },
-  '/mcp': { prompt: () => 'Show configured MCP servers and their status.' },
 };
 
 export const TOOL_LABELS: Record<string, string> = {

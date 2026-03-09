@@ -1162,6 +1162,26 @@ async function main(): Promise<void> {
         await client.sendMessage(chatId, lines.join("\n") + resumeCmd);
         break;
       }
+      case '/mcp': {
+        const globalCfg = configStore.raw();
+        const merged: Record<string, unknown> = { ...(globalCfg.mcpServers ?? {}) };
+        try {
+          const mcpPath = path.join(process.env.HOME ?? '', '.copilot', 'mcp-config.json');
+          if (fs.existsSync(mcpPath)) {
+            const mcpFile = JSON.parse(fs.readFileSync(mcpPath, 'utf-8'));
+            const servers = mcpFile.mcpServers ?? mcpFile.servers ?? mcpFile;
+            Object.assign(merged, servers);
+          }
+        } catch { /* ignore */ }
+        const names = Object.keys(merged);
+        if (!names.length) {
+          await client.sendMessage(chatId, '🔌 No MCP servers configured.');
+        } else {
+          const lines = names.map(n => '• `' + n + '`');
+          await client.sendMessage(chatId, '🔌 *MCP Servers* (' + names.length + ')\n' + lines.join('\n'));
+        }
+        break;
+      }
       case '/yes':
       case '/y': {
         sessions.get(chatId)?.approve();
