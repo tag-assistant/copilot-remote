@@ -1,8 +1,8 @@
+# copilot-remote
+
 <a href="https://github-production-user-asset-6210df.s3.amazonaws.com/22425467/560647433-094841ec-82d2-421e-8a09-dee51744596b.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260310%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260310T013704Z&X-Amz-Expires=300&X-Amz-Signature=208026d2887a4aae9b53a38ad38c3cf146192e4def4f2f3eff34ab4e3f30f835&X-Amz-SignedHeaders=host">
   <img align="right" width="150" alt="My drawing" src="https://github.com/user-attachments/assets/1d209263-63d8-4833-a559-d29bd918f114" />
 </a>
-
-# copilot-remote
 
 Control GitHub Copilot from Telegram. Full SDK integration — streaming, tool calls, permissions, multi-session forum topics.
 
