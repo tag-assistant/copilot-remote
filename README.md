@@ -10,7 +10,7 @@ Conceptually, this is a lot like [Claude Code Remote Control's requirements](htt
 
 [![CI](https://github.com/austenstone/copilot-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/austenstone/copilot-remote/actions/workflows/ci.yml)
 
-## Setup
+### Setup
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/austenstone/copilot-remote/main/install.sh | bash
